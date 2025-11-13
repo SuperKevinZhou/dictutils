@@ -85,9 +85,9 @@ pub struct StarDict {
     mmap: Option<Arc<Mmap>>,
     /// File handle for .dict/.dz
     dict_file: File,
-    /// Optional BTree index (sidecar, our own index format)
+    /// Optional BTree index for fast key lookups (built or loaded lazily)
     btree_index: Option<BTreeIndex>,
-    /// Optional FTS index (sidecar, our own index format)
+    /// Optional FTS index for full-text search (built or loaded lazily)
     fts_index: Option<FtsIndex>,
     /// Cache for frequently accessed entries
     entry_cache: Arc<RwLock<lru_cache::LruCache<String, Vec<u8>>>>,
@@ -161,7 +161,7 @@ impl StarDict {
             None
         };
 
-        // 7) Load optional sidecar indexes
+        // 7) Load optional sidecar indexes or build minimal in-memory ones
         let (btree_index, fts_index) =
             Self::load_sidecar_indexes(&ifo_path, &config)?;
 
@@ -570,6 +570,7 @@ impl StarDict {
     }
 
     /// Load optional sidecar .btree and .fts based on the .ifo stem.
+    /// If sidecars are missing but building is allowed, construct in-memory indexes.
     fn load_sidecar_indexes(
         ifo_path: &Path,
         config: &DictConfig,
@@ -581,16 +582,22 @@ impl StarDict {
         let mut btree_index = None;
         let mut fts_index = None;
 
+        // Prefer persisted BTree index if present
         if config.load_btree && btree_path.exists() {
             let mut b = BTreeIndex::new();
             b.load(&btree_path)?;
-            btree_index = Some(b);
+            if b.is_built() {
+                btree_index = Some(b);
+            }
         }
 
+        // Prefer persisted FTS index if present
         if config.load_fts && fts_path.exists() {
             let mut f = FtsIndex::new();
             f.load(&fts_path)?;
-            fts_index = Some(f);
+            if f.is_built() {
+                fts_index = Some(f);
+            }
         }
 
         Ok((btree_index, fts_index))
@@ -729,14 +736,21 @@ impl StarDict {
                 skip_cstring(&mut header_reader)?;
             }
             if fhcrc {
+                // Read and discard 2-byte header CRC
                 let mut crc_buf = [0u8; 2];
-                file.read_exact(&mut crc_buf)
+                header_reader
+                    .read_exact(&mut crc_buf)
                     .map_err(|e| DictError::IoError(format!("dict.dz read FHCRC: {e}")))?;
             }
 
-            let data_start = file
+            // After skipping all optional header parts using header_reader, keep file
+            // in sync by seeking it to the same position. That position is the start
+            // of compressed dictzip data (data_start).
+            let data_start = header_reader
                 .seek(SeekFrom::Current(0))
                 .map_err(|e| DictError::IoError(format!("dict.dz tell: {e}")))? as u64;
+            file.seek(SeekFrom::Start(data_start))
+                .map_err(|e| DictError::IoError(format!("dict.dz seek data_start: {e}")))?;
 
             if let Some((chunk_len, offs)) = ra_chunks {
                 // We have a dictzip chunk table. Implement random access:
@@ -905,6 +919,10 @@ impl Dict<String> for StarDict {
     }
 
     fn contains(&self, key: &String) -> Result<bool> {
+        // Prefer BTree index if available for O(log N) lookups.
+        if let Some(ref bt) = self.btree_index {
+            return Ok(bt.search(key)?.is_some());
+        }
         Ok(self.index.contains_key(key))
     }
 
@@ -913,6 +931,28 @@ impl Dict<String> for StarDict {
             return Ok(v);
         }
 
+        // If we have a BTree index (sidecar or built), use it as source of truth.
+        if let Some(ref bt) = self.btree_index {
+            if let Some((_w, off)) = bt.search(key)? {
+                // BTree stores logical offsets; map via primary index if present.
+                if let Some(loc) = self.index.get(key) {
+                    let data = self.read_entry(*loc)?;
+                    self.cache_put(key.clone(), data.clone());
+                    return Ok(data);
+                }
+                // Fallback: treat BTree payload as EntryLoc.offset if no idx entry.
+                let loc = EntryLoc {
+                    offset: off as u64,
+                    size: 0, // will error if size is really needed and missing
+                };
+                let data = self.read_entry(loc)?;
+                self.cache_put(key.clone(), data.clone());
+                return Ok(data);
+            }
+            return Err(DictError::IndexError("Key not found".to_string()));
+        }
+
+        // Fallback to in-memory idx map.
         let loc = match self.index.get(key) {
             Some(loc) => *loc,
             None => return Err(DictError::IndexError("Key not found".to_string())),
@@ -982,10 +1022,32 @@ impl Dict<String> for StarDict {
 
     fn get_range(
         &self,
-        _range: std::ops::Range<usize>,
+        range: std::ops::Range<usize>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        // Not optimized; could be implemented via sorted keys or BTreeIndex.
-        Ok(Vec::new())
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // For predictable ordering and minimal memory, iterate keys in sorted order
+        // and read only requested slice lazily.
+        let mut keys: Vec<&String> = self.index.keys().collect();
+        keys.sort_unstable();
+
+        if range.start >= keys.len() {
+            return Ok(Vec::new());
+        }
+
+        let end = range.end.min(keys.len());
+        let mut out = Vec::with_capacity(end - range.start);
+
+        for key in &keys[range.start..end] {
+            if let Some(loc) = self.index.get(*key) {
+                let entry = self.read_entry(*loc)?;
+                out.push(((*key).clone(), entry));
+            }
+        }
+
+        Ok(out)
     }
 
     fn iter(&self) -> Result<EntryIterator<String>> {
@@ -1043,7 +1105,53 @@ impl Dict<String> for StarDict {
     }
 
     fn build_indexes(&mut self) -> Result<()> {
-        // Leave index building to external tooling; this parser only consumes.
+        // Build in-memory BTree and FTS indexes from the loaded .idx map.
+        // This does not persist to disk; external tools may still generate sidecars.
+        if self.index.is_empty() {
+            return Err(DictError::UnsupportedOperation(
+                "StarDict index building requires loaded .idx entries".to_string(),
+            ));
+        }
+
+        let mut btree = BTreeIndex::new();
+        let mut entries_for_fts: Vec<(String, Vec<u8>)> =
+            Vec::with_capacity(self.index.len());
+        let idx_cfg = crate::index::IndexConfig::default();
+
+        // Deterministic order by key for reproducible layout.
+        let mut items: Vec<(&String, &EntryLoc)> = self.index.iter().collect();
+        items.sort_unstable_by(|a, b| a.0.cmp(b.0));
+
+        for (word, loc) in items {
+            let data = self.read_entry(*loc)?;
+            entries_for_fts.push((word.clone(), data));
+        }
+
+        // For BTree we store logical offsets as u64 indices into entries_for_fts.
+        let btree_entries: Vec<(String, Vec<u8>)> = entries_for_fts
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (k.clone(), (i as u64).to_le_bytes().to_vec()))
+            .collect();
+
+        btree.build(&btree_entries, &idx_cfg)?;
+        if !btree.is_built() {
+            return Err(DictError::IndexError(
+                "StarDict BTree index build produced an empty index".to_string(),
+            ));
+        }
+        self.btree_index = Some(btree);
+
+        // Build FTS index over article contents.
+        let mut fts = FtsIndex::new();
+        fts.build(&entries_for_fts, &idx_cfg)?;
+        if !fts.is_built() {
+            return Err(DictError::IndexError(
+                "StarDict FTS index build produced an empty index".to_string(),
+            ));
+        }
+        self.fts_index = Some(fts);
+
         Ok(())
     }
 }

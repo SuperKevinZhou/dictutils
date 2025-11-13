@@ -417,7 +417,8 @@ impl ZimDict {
 
         rdr.seek(SeekFrom::Start(entry_pos + 2))
             .map_err(|e| DictError::IoError(format!("seek ArticleEntry: {e}")))?;
-        let mut buf = [0u8; 1 + 1 + 4 + 4]; // parameterLen, ns, rev, cluster, blob
+        // Read parameterLen(1), ns(1), rev(4), cluster(4), blob(4) = 14 bytes
+        let mut buf = [0u8; 14];
         rdr.read_exact(&mut buf)
             .map_err(|e| DictError::IoError(format!("read ArticleEntry: {e}")))?;
 
@@ -470,18 +471,66 @@ impl ZimDict {
             4
         };
 
-        // Read rest of cluster up to next cluster or EOF (we approximate by reading a fixed chunk).
-        let mut data = Vec::new();
-        rdr.read_to_end(&mut data)
+        // Compute this cluster's compressed size using next cluster offset or EOF.
+        let file_len = self
+            .file
+            .metadata()
+            .map_err(|e| DictError::IoError(format!("zim metadata: {e}")))?
+            .len();
+        let next_cluster_offset = if cluster_no + 1 < self.header.cluster_count {
+            // Read next cluster pointer
+            rdr.seek(SeekFrom::Start(
+                self.header
+                    .cluster_ptr_pos
+                    .checked_add((cluster_no as u64 + 1) * 8)
+                    .ok_or_else(|| {
+                        DictError::InvalidFormat(
+                            "ZIM: cluster_ptr_pos overflow for next cluster".to_string(),
+                        )
+                    })?,
+            ))
+            .map_err(|e| DictError::IoError(format!("seek next clusterPtr: {e}")))?;
+            let mut next_buf = [0u8; 8];
+            rdr.read_exact(&mut next_buf)
+                .map_err(|e| {
+                    DictError::IoError(format!("read next cluster offset: {e}"))
+                })?;
+            u64::from_le_bytes(next_buf)
+        } else {
+            file_len
+        };
+        if next_cluster_offset <= cluster_offset {
+            return Err(DictError::InvalidFormat(
+                "ZIM: non-increasing cluster offsets".to_string(),
+            ));
+        }
+        let comp_size = (next_cluster_offset - cluster_offset - 1) as usize;
+        let mut data = vec![0u8; comp_size];
+        rdr.read_exact(&mut data)
             .map_err(|e| DictError::IoError(format!("read cluster data: {e}")))?;
 
-        // Decompression: use util::compression via crate::index::CompressionAlgorithm mapping
+        // Decompression: support common compression types per references/zim.cc.
         let decompressed = match compression_type {
-            0 => data, // Default/None
+            0 | 1 => {
+                // Default/None — raw data
+                data
+            }
+            2 => {
+                // Zlib-compressed cluster (common in ZIM)
+                use flate2::read::ZlibDecoder;
+                let mut z = ZlibDecoder::new(&data[..]);
+                let mut out = Vec::new();
+                z.read_to_end(&mut out).map_err(|e| {
+                    DictError::DecompressionError(format!(
+                        "ZIM zlib cluster decompression failed: {e}"
+                    ))
+                })?;
+                out
+            }
+            // 3 => Bzip2, 4 => LZMA2, 5 => Zstd in references; can be wired via util::compression if needed.
             _ => {
-                // For brevity, non-zero compression types treated as unsupported.
                 return Err(DictError::UnsupportedOperation(
-                    "ZIM compressed clusters not fully implemented".to_string(),
+                    "ZIM compressed clusters not fully supported in this build".to_string(),
                 ));
             }
         };
@@ -637,16 +686,46 @@ impl Dict<String> for ZimDict {
 
     fn get_range(
         &self,
-        _range: std::ops::Range<usize>,
+        range: std::ops::Range<usize>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        // Could be implemented by scanning BTree index; not essential for core usage.
-        Ok(Vec::new())
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let btree = self.btree_index.as_ref().ok_or_else(|| {
+            DictError::UnsupportedOperation(
+                "ZIM get_range requires a loaded BTree index".to_string(),
+            )
+        })?;
+
+        let all = btree.range_query("", "\u{10FFFF}")?;
+        if all.is_empty() || range.start >= all.len() {
+            return Ok(Vec::new());
+        }
+
+        let end = range.end.min(all.len());
+        let mut out = Vec::with_capacity(end - range.start);
+        for (key, off) in &all[range.start..end] {
+            let data = self.read_article_by_number(*off as u32)?;
+            out.push((key.clone(), data));
+        }
+        Ok(out)
     }
 
     fn iter(&self) -> Result<EntryIterator<'_, String>> {
-        Err(DictError::UnsupportedOperation(
-            "ZIM full iteration not implemented".to_string(),
-        ))
+        let btree = self.btree_index.as_ref().ok_or_else(|| {
+            DictError::UnsupportedOperation(
+                "ZIM iter requires a loaded BTree index".to_string(),
+            )
+        })?;
+
+        let all = btree.range_query("", "\u{10FFFF}")?;
+        let keys: Vec<String> = all.into_iter().map(|(k, _)| k).collect();
+
+        Ok(EntryIterator {
+            keys: keys.into_iter(),
+            dictionary: self,
+        })
     }
 
     fn prefix_iter(
@@ -691,7 +770,58 @@ impl Dict<String> for ZimDict {
     }
 
     fn build_indexes(&mut self) -> Result<()> {
-        // Full ZIM indexing (URL/title → articleNo, FTS) is handled by external tools.
+        // Build in-memory BTree/FTS indexes from an existing sidecar BTree or by
+        // scanning articles when possible. If no base index is present, return a
+        // clear error instead of silently succeeding.
+        if self.btree_index.is_none() {
+            return Err(DictError::UnsupportedOperation(
+                "ZIM index building requires an existing BTree sidecar index for enumeration"
+                    .to_string(),
+            ));
+        }
+
+        let base_btree = self.btree_index.as_ref().unwrap();
+        let all = base_btree.range_query("", "\u{10FFFF}")?;
+        if all.is_empty() {
+            return Err(DictError::UnsupportedOperation(
+                "ZIM index building: no keys available from base index".to_string(),
+            ));
+        }
+
+        // Rebuild BTree index deterministically from the collected keys.
+        let mut btree = crate::index::btree::BTreeIndex::new();
+        let mut entries_for_fts: Vec<(String, Vec<u8>)> = Vec::with_capacity(all.len());
+        let idx_cfg = crate::index::IndexConfig::default();
+
+        for (key, off) in all {
+            let data = self.read_article_by_number(off as u32)?;
+            entries_for_fts.push((key.clone(), data));
+        }
+
+        // For BTree we use ordinal offsets into entries_for_fts as values.
+        let btree_entries: Vec<(String, Vec<u8>)> = entries_for_fts
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (k.clone(), (i as u64).to_le_bytes().to_vec()))
+            .collect();
+        btree.build(&btree_entries, &idx_cfg)?;
+        if !btree.is_built() {
+            return Err(DictError::IndexError(
+                "ZIM B-TREE index rebuild produced an empty index".to_string(),
+            ));
+        }
+        self.btree_index = Some(btree);
+
+        // Build FTS index over article contents.
+        let mut fts = crate::index::fts::FtsIndex::new();
+        fts.build(&entries_for_fts, &idx_cfg)?;
+        if !fts.is_built() {
+            return Err(DictError::IndexError(
+                "ZIM FTS index build produced an empty index".to_string(),
+            ));
+        }
+        self.fts_index = Some(fts);
+
         Ok(())
     }
 }

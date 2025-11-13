@@ -39,7 +39,7 @@ use std::sync::Arc;
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 
-use crate::index::{btree::BTreeIndex, fts::FtsIndex};
+use crate::index::{btree::BTreeIndex, fts::FtsIndex, Index, IndexConfig};
 use crate::traits::{
     Dict, DictConfig, DictError, DictFormat, DictMetadata, DictStats, EntryIterator,
     HighPerformanceDict, Result, SearchResult,
@@ -601,10 +601,31 @@ impl Dict<String> for DslDict {
     fn search_fuzzy(
         &self,
         query: &str,
-        _max_distance: Option<u32>,
+        max_distance: Option<u32>,
     ) -> Result<Vec<SearchResult>> {
-        // Minimal implementation: treat as prefix search.
-        self.search_prefix(query, Some(64))
+        let max_distance = max_distance.unwrap_or(2);
+        let mut results = Vec::new();
+
+        for (hw, body) in &self.entries {
+            let dist = levenshtein(query, hw);
+            if dist as u32 <= max_distance {
+                results.push(SearchResult {
+                    word: hw.clone(),
+                    entry: body.as_bytes().to_vec(),
+                    score: Some(1.0 / (1.0 + dist as f32)),
+                    highlights: None,
+                });
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .unwrap_or(0.0)
+                .partial_cmp(&a.score.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(results)
     }
 
     fn search_fulltext(
@@ -624,20 +645,48 @@ impl Dict<String> for DslDict {
                     }));
                 }
             }
-            Ok(Box::new(out.into_iter()))
-        } else {
-            Err(DictError::UnsupportedOperation(
-                "FTS index not available for DSL".to_string(),
-            ))
+            return Ok(Box::new(out.into_iter()));
         }
+
+        // Fallback: substring scan over bodies.
+        let needle = query.to_lowercase();
+        let mut out = Vec::new();
+        for (hw, body) in &self.entries {
+            if body.to_lowercase().contains(&needle) {
+                out.push(Ok(SearchResult {
+                    word: hw.clone(),
+                    entry: body.as_bytes().to_vec(),
+                    score: None,
+                    highlights: None,
+                }));
+            }
+        }
+        Ok(Box::new(out.into_iter()))
     }
 
     fn get_range(
         &self,
-        _range: std::ops::Range<usize>,
+        range: std::ops::Range<usize>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        // Not optimized: left as no-op to avoid heavy allocations by default.
-        Ok(Vec::new())
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut keys: Vec<&String> = self.entries.keys().collect();
+        keys.sort();
+
+        if range.start >= keys.len() {
+            return Ok(Vec::new());
+        }
+
+        let end = range.end.min(keys.len());
+        let mut out = Vec::with_capacity(end - range.start);
+        for key in &keys[range.start..end] {
+            if let Some(body) = self.entries.get(*key) {
+                out.push(((*key).clone(), body.as_bytes().to_vec()));
+            }
+        }
+        Ok(out)
     }
 
     fn iter(&self) -> Result<EntryIterator<String>> {
@@ -652,10 +701,9 @@ impl Dict<String> for DslDict {
         &self,
         prefix: &str,
     ) -> Result<Box<dyn Iterator<Item = Result<(String, Vec<u8>)>> + Send>> {
-        let prefix = prefix.to_string();
         let mut items = Vec::new();
         for (hw, body) in self.entries.iter() {
-            if hw.starts_with(&prefix) {
+            if hw.starts_with(prefix) {
                 items.push(Ok((hw.clone(), body.as_bytes().to_vec())));
             }
         }
@@ -693,7 +741,16 @@ impl Dict<String> for DslDict {
     }
 
     fn build_indexes(&mut self) -> Result<()> {
-        // Index building intentionally left to external tools or future work.
+        // Build an in-memory FTS index for all entries; no on-disk format changes.
+        let mut fts = FtsIndex::new();
+        let cfg = crate::index::IndexConfig::default();
+        let entries: Vec<(String, Vec<u8>)> = self
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_bytes().to_vec()))
+            .collect();
+        fts.build(&entries, &cfg)?;
+        self.fts_index = Some(fts);
         Ok(())
     }
 }
@@ -716,6 +773,33 @@ impl HighPerformanceDict<String> for DslDict {
             Ok(Box::new(res.into_iter().map(Ok)))
         }
     }
+}
+
+/// Simple Levenshtein distance used for DSL fuzzy search.
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let (m, n) = (a.chars().count(), b.chars().count());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
+
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = std::cmp::min(
+                std::cmp::min(curr[j] + 1, prev[j + 1] + 1),
+                prev[j] + cost,
+            );
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
 
 /// DictFormat implementation for DSL.

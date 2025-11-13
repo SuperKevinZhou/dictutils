@@ -389,16 +389,52 @@ impl Dict<String> for BglDict {
 
     fn get_range(
         &self,
-        _range: std::ops::Range<usize>,
+        range: std::ops::Range<usize>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        // Could be implemented using BTree range_query; not required for core usage.
-        Ok(Vec::new())
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(ref btree) = self.btree_index {
+            let all = btree.range_query("", "\u{10FFFF}")?;
+            if all.is_empty() || range.start >= all.len() {
+                return Ok(Vec::new());
+            }
+
+            let slice = &all[range.start.min(all.len())..range.end.min(all.len())];
+            let mut out = Vec::with_capacity(slice.len());
+            for (word, off) in slice.iter() {
+                if let Ok((_h, _d, body)) = self.read_article_at(*off) {
+                    out.push((word.clone(), body));
+                }
+            }
+            Ok(out)
+        } else {
+            Err(DictError::UnsupportedOperation(
+                "BGL get_range requires a loaded BTree index".to_string(),
+            ))
+        }
     }
 
     fn iter(&self) -> Result<EntryIterator<'_, String>> {
-        Err(DictError::UnsupportedOperation(
-            "BGL iter not implemented".to_string(),
-        ))
+        if self.btree_index.is_none() {
+            return Err(DictError::UnsupportedOperation(
+                "BGL iter requires a loaded BTree index".to_string(),
+            ));
+        }
+
+        // Materialize keys from BTree for a deterministic iteration order.
+        let btree = self
+            .btree_index
+            .as_ref()
+            .ok_or_else(|| DictError::Internal("BGL BTree index missing".to_string()))?;
+        let all = btree.range_query("", "\u{10FFFF}")?;
+        let keys: Vec<String> = all.into_iter().map(|(k, _)| k).collect();
+
+        Ok(EntryIterator {
+            keys: keys.into_iter(),
+            dictionary: self,
+        })
     }
 
     fn prefix_iter(
@@ -443,7 +479,53 @@ impl Dict<String> for BglDict {
     }
 
     fn build_indexes(&mut self) -> Result<()> {
-        // Index building left to external tools.
+        // Build an in-memory FTS index when we have a BTree index and can read articles.
+        //
+        // This stays within the existing design:
+        // - Requires an already loaded BTree sidecar (same as GoldenDict's BGL indexer output).
+        // - Does not modify on-disk files.
+        // - Streams articles via read_article_at() to avoid unnecessary memory usage.
+        //
+        // Semantics:
+        // - Use BTree keys as headwords.
+        // - Use [body] as fulltext content.
+        // - Keep BTree index as-is; only (re)build FTS index in memory.
+
+        let btree = match &self.btree_index {
+            Some(b) => b,
+            None => {
+                return Err(DictError::UnsupportedOperation(
+                    "BGL build_indexes requires a loaded BTree index".to_string(),
+                ))
+            }
+        };
+
+        let all = btree.range_query("", "\u{10FFFF}")?;
+        if all.is_empty() {
+            return Err(DictError::IndexError(
+                "BGL build_indexes: base BTree index is empty".to_string(),
+            ));
+        }
+
+        // Collect entries for FTS. To bound memory, we only store (word, body)
+        // pairs once; callers that need more advanced policies can adjust
+        // IndexConfig in the future.
+        let mut fts_entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(all.len());
+        for (word, off) in &all {
+            let (_head, _disp, body) = self.read_article_at(*off)?;
+            fts_entries.push((word.clone(), body));
+        }
+
+        let mut fts = FtsIndex::new();
+        let cfg = crate::index::IndexConfig::default();
+        fts.build(&fts_entries, &cfg)?;
+        if !fts.is_built() {
+            return Err(DictError::IndexError(
+                "BGL FTS index build produced an empty index".to_string(),
+            ));
+        }
+
+        self.fts_index = Some(fts);
         Ok(())
     }
 }

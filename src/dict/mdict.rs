@@ -474,23 +474,48 @@ impl MDict {
         cache.insert(key, value);
     }
 
-    /// Build indexes if not present
+    /// Build indexes for this MDict based on the current on-disk data.
+    ///
+    /// This implementation:
+    /// - Enumerates all keys from the B-TREE index if present, otherwise returns a clear error.
+    /// - Uses `get()` to fetch each entry, ensuring consistency with the existing reader.
+    /// - Builds and persists B-TREE and FTS sidecar indexes in a deterministic way.
     pub fn build_indexes(&mut self) -> Result<()> {
         if !self.config.load_btree && !self.config.load_fts {
             return Ok(());
         }
 
-        // Collect all entries
-        let entries = self.collect_all_entries()?;
-
-        // Build B-TREE index
-        if self.config.load_btree {
-            if entries.is_empty() {
+        // We require at least one way to enumerate keys. Since a full MDX parser for
+        // key/record blocks is out of scope here, rely on an existing B-TREE index.
+        let base_btree = match &self.btree_index {
+            Some(idx) => idx,
+            None => {
                 return Err(DictError::UnsupportedOperation(
-                    "MDict index building requires full entry extraction; no entries collected"
+                    "MDict index building requires an existing B-TREE index for key enumeration"
                         .to_string(),
-                ));
+                ))
             }
+        };
+
+        // Collect entries by iterating over existing B-TREE range.
+        let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+        let all = base_btree.range_query("", "\u{10FFFF}")?;
+        for (key, _offset) in all {
+            // Use public API to obtain value
+            if let Ok(value) = self.get(&key) {
+                entries.push((key, value));
+            }
+        }
+
+        if entries.is_empty() {
+            return Err(DictError::UnsupportedOperation(
+                "MDict index building: no entries could be enumerated from existing index"
+                    .to_string(),
+            ));
+        }
+
+        // Rebuild B-TREE index if requested.
+        if self.config.load_btree {
             let mut btree = BTreeIndex::new();
             let index_config = IndexConfig::default();
             btree.build(&entries, &index_config)?;
@@ -505,14 +530,8 @@ impl MDict {
             self.btree_index = Some(btree);
         }
 
-        // Build FTS index
+        // Build FTS index if requested.
         if self.config.load_fts {
-            if entries.is_empty() {
-                return Err(DictError::UnsupportedOperation(
-                    "MDict FTS index building requires full entry extraction; no entries collected"
-                        .to_string(),
-                ));
-            }
             let mut fts = FtsIndex::new();
             let index_config = IndexConfig::default();
             fts.build(&entries, &index_config)?;
@@ -530,15 +549,23 @@ impl MDict {
         Ok(())
     }
 
-    /// Collect all entries from the dictionary
+    /// Collect all entries from the dictionary by enumerating keys from the current B-TREE index.
+    ///
+    /// This helper is used internally for index building; it does not parse raw MDX blocks
+    /// but instead reuses the existing `get()` implementation to ensure consistency.
     fn collect_all_entries(&self) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut entries = Vec::new();
+        let mut out = Vec::new();
 
-        // This would read all entries from the MDict file
-        // For now, return empty vector
-        // In a full implementation, this would iterate through the key/value blocks
+        if let Some(btree) = &self.btree_index {
+            let all = btree.range_query("", "\u{10FFFF}")?;
+            for (key, _off) in all {
+                if let Ok(val) = self.get(&key) {
+                    out.push((key, val));
+                }
+            }
+        }
 
-        Ok(entries)
+        Ok(out)
     }
 
     /// Get file paths for this dictionary
@@ -656,12 +683,32 @@ impl Dict<String> for MDict {
     }
 
     fn get_range(&self, range: std::ops::Range<usize>) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut results = Vec::new();
-        
-        // This would implement range queries using indexes
-        // For now, return empty results
-        
-        Ok(results)
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use B-TREE index if available to provide deterministic ordering.
+        if let Some(ref btree) = self.btree_index {
+            let all = btree.range_query("", "\u{10FFFF}")?;
+            let slice = if range.start >= all.len() {
+                &[]
+            } else {
+                &all[range.start.min(all.len())..range.end.min(all.len())]
+            };
+
+            let mut out = Vec::with_capacity(slice.len());
+            for (key, _off) in slice {
+                if let Ok(val) = self.get(&key) {
+                    out.push((key.clone(), val));
+                }
+            }
+            return Ok(out);
+        }
+
+        // Without an index we cannot implement efficient stable range queries.
+        Err(DictError::UnsupportedOperation(
+            "MDict get_range requires a loaded B-TREE index".to_string(),
+        ))
     }
 
     fn iter(&self) -> Result<EntryIterator<String>> {
@@ -673,9 +720,16 @@ impl Dict<String> for MDict {
         })
     }
 
-    fn prefix_iter(&self, _prefix: &str) -> Result<Box<dyn Iterator<Item = Result<(String, Vec<u8>)>> + Send>> {
-        // This would return an iterator over prefix matches
-        Err(DictError::UnsupportedOperation("Prefix iterator not implemented".to_string()))
+    fn prefix_iter(
+        &self,
+        prefix: &str,
+    ) -> Result<Box<dyn Iterator<Item = Result<(String, Vec<u8>)>> + Send>> {
+        let results = self.search_prefix(prefix, None)?;
+        let mapped: Vec<_> = results
+            .into_iter()
+            .map(|sr| Ok((sr.word, sr.entry)))
+            .collect();
+        Ok(Box::new(mapped.into_iter()))
     }
 
     fn len(&self) -> usize {
@@ -711,10 +765,8 @@ impl Dict<String> for MDict {
     }
 
     fn build_indexes(&mut self) -> Result<()> {
-        // Delegate to the concrete builder; if index building is not properly
-        // supported (e.g. missing full parser), return a clear error instead of
-        // silently succeeding.
-        self.build_indexes()
+        // Use the concrete index-building helper above.
+        MDict::build_indexes(self)
     }
 }
 

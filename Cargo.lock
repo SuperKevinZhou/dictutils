@@ -437,6 +437,7 @@ dependencies = [
  "lru-cache",
  "lz4_flex 0.11.5",
  "memmap2 0.9.9",
+ "minilzo-rs",
  "parking_lot",
  "proptest",
  "regex",
@@ -788,6 +789,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "minilzo-rs"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c71a19a4b57d7712a7946e51a7a998f1d8252e16000706ae63243e951fcfce09"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

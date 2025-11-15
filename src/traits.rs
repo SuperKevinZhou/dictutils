@@ -160,12 +160,12 @@ impl<'a, K: Hash + Eq + Clone + fmt::Display> Iterator for EntryIterator<'a, K> 
     type Item = Result<(K, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.keys.next().and_then(|key| {
-            match self.dictionary.get(&key) {
+        self.keys
+            .next()
+            .and_then(|key| match self.dictionary.get(&key) {
                 Ok(entry) => Some(Ok((key, entry))),
                 Err(e) => Some(Err(e)),
-            }
-        })
+            })
     }
 }
 
@@ -234,7 +234,10 @@ where
     fn search_fuzzy(&self, query: &str, max_distance: Option<u32>) -> Result<Vec<SearchResult>>;
 
     /// Full-text search across all entries
-    fn search_fulltext(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>> + Send>>;
+    fn search_fulltext(
+        &self,
+        query: &str,
+    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>> + Send>>;
 
     /// Get entries by index range
     fn get_range(&self, range: Range<usize>) -> Result<Vec<(K, Vec<u8>)>>;
@@ -243,7 +246,10 @@ where
     fn iter(&self) -> Result<EntryIterator<K>>;
 
     /// Get an iterator for prefix matches
-    fn prefix_iter(&self, prefix: &str) -> Result<Box<dyn Iterator<Item = Result<(K, Vec<u8>)>> + Send>>;
+    fn prefix_iter(
+        &self,
+        prefix: &str,
+    ) -> Result<Box<dyn Iterator<Item = Result<(K, Vec<u8>)>> + Send>>;
 
     /// Get the number of entries in the dictionary
     fn len(&self) -> usize;
@@ -267,7 +273,7 @@ where
         DictStats {
             total_entries: self.len() as u64,
             cache_hit_rate: 0.0, // Default implementation
-            memory_usage: 0,      // Default implementation
+            memory_usage: 0,     // Default implementation
             index_sizes: HashMap::new(),
         }
     }

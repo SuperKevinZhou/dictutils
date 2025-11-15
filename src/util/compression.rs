@@ -3,13 +3,12 @@
 //! This module provides compression and decompression functions using
 //! various algorithms for efficient storage and retrieval.
 
-use std::io::{self, Read, Write, Cursor};
+use std::io::{self, Cursor, Read, Write};
 use std::result::Result as StdResult;
 
 use crate::traits::{DictError, Result};
 
-#[derive(Debug, Clone)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CompressionAlgorithm {
     /// No compression
     None,
@@ -77,16 +76,19 @@ pub fn suggested_compression_level(algorithm: &CompressionAlgorithm) -> u32 {
 // GZIP compression
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
-    encoder.write_all(data)
+    encoder
+        .write_all(data)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    encoder.finish()
+    encoder
+        .finish()
         .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 fn decompress_gzip(compressed: &[u8]) -> Result<Vec<u8>> {
     let mut decoder = flate2::read::GzDecoder::new(compressed);
     let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed)
+    decoder
+        .read_to_end(&mut decompressed)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
     Ok(decompressed)
 }
@@ -108,17 +110,20 @@ fn decompress_lz4(compressed: &[u8]) -> Result<Vec<u8>> {
 fn compress_zstd(data: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = zstd::Encoder::new(Vec::new(), 6)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    encoder.write_all(data)
+    encoder
+        .write_all(data)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    encoder.finish()
+    encoder
+        .finish()
         .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 fn decompress_zstd(compressed: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = zstd::Decoder::new(compressed)
-        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
+    let mut decoder =
+        zstd::Decoder::new(compressed).map_err(|e| DictError::DecompressionError(e.to_string()))?;
     let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed)
+    decoder
+        .read_to_end(&mut decompressed)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
     Ok(decompressed)
 }
@@ -209,12 +214,13 @@ pub fn compress_stream<R: Read, W: Write>(
         CompressionAlgorithm::None => {
             let mut buffer = vec![0u8; 8192];
             let mut total_written = 0u64;
-            
+
             loop {
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        output.write_all(&buffer[..n])
+                        output
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
@@ -227,20 +233,22 @@ pub fn compress_stream<R: Read, W: Write>(
             let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(6));
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        encoder.write_all(&buffer[..n])
+                        encoder
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
                     Err(e) => return Err(DictError::IoError(e.to_string())),
                 }
             }
-            
-            encoder.finish()
+
+            encoder
+                .finish()
                 .map_err(|e| DictError::IoError(e.to_string()))?;
             Ok(total_written)
         }
@@ -248,42 +256,46 @@ pub fn compress_stream<R: Read, W: Write>(
             let mut encoder = lz4_flex::frame::FrameEncoder::new(output);
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        encoder.write_all(&buffer[..n])
+                        encoder
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
                     Err(e) => return Err(DictError::IoError(e.to_string())),
                 }
             }
-            
-            encoder.finish()
+
+            encoder
+                .finish()
                 .map_err(|e| DictError::IoError(e.to_string()))?;
             Ok(total_written)
         }
         CompressionAlgorithm::Zstd => {
-            let mut encoder = zstd::Encoder::new(output, 6)
-                .map_err(|e| DictError::IoError(e.to_string()))?;
+            let mut encoder =
+                zstd::Encoder::new(output, 6).map_err(|e| DictError::IoError(e.to_string()))?;
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        encoder.write_all(&buffer[..n])
+                        encoder
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
                     Err(e) => return Err(DictError::IoError(e.to_string())),
                 }
             }
-            
-            encoder.finish()
+
+            encoder
+                .finish()
                 .map_err(|e| DictError::IoError(e.to_string()))?;
             Ok(total_written)
         }
@@ -300,12 +312,13 @@ pub fn decompress_stream<R: Read, W: Write>(
         CompressionAlgorithm::None => {
             let mut buffer = vec![0u8; 8192];
             let mut total_written = 0u64;
-            
+
             loop {
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        output.write_all(&buffer[..n])
+                        output
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
@@ -318,12 +331,13 @@ pub fn decompress_stream<R: Read, W: Write>(
             let mut decoder = flate2::read::GzDecoder::new(input);
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        output.write_all(&buffer[..n])
+                        output
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
@@ -336,12 +350,13 @@ pub fn decompress_stream<R: Read, W: Write>(
             let mut decoder = lz4_flex::frame::FrameDecoder::new(input);
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        output.write_all(&buffer[..n])
+                        output
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }
@@ -351,16 +366,17 @@ pub fn decompress_stream<R: Read, W: Write>(
             Ok(total_written)
         }
         CompressionAlgorithm::Zstd => {
-            let mut decoder = zstd::Decoder::new(input)
-                .map_err(|e| DictError::IoError(e.to_string()))?;
+            let mut decoder =
+                zstd::Decoder::new(input).map_err(|e| DictError::IoError(e.to_string()))?;
             let mut total_written = 0u64;
             let mut buffer = vec![0u8; 8192];
-            
+
             loop {
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        output.write_all(&buffer[..n])
+                        output
+                            .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
                         total_written += n as u64;
                     }

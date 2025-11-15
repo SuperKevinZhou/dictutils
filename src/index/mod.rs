@@ -119,10 +119,7 @@ pub enum IndexError {
     /// Index corruption detected
     CorruptedIndex(String),
     /// Index version mismatch
-    VersionMismatch {
-        expected: String,
-        found: String,
-    },
+    VersionMismatch { expected: String, found: String },
     /// Index not built
     NotBuilt(String),
     /// Index I/O error
@@ -138,7 +135,11 @@ impl fmt::Display for IndexError {
         match self {
             IndexError::CorruptedIndex(msg) => write!(f, "Corrupted index: {}", msg),
             IndexError::VersionMismatch { expected, found } => {
-                write!(f, "Version mismatch: expected {}, found {}", expected, found)
+                write!(
+                    f,
+                    "Version mismatch: expected {}, found {}",
+                    expected, found
+                )
             }
             IndexError::NotBuilt(name) => write!(f, "Index '{}' not built", name),
             IndexError::IoError(msg) => write!(f, "Index I/O error: {}", msg),
@@ -222,7 +223,7 @@ impl IndexManager {
     pub fn load_all(&mut self, base_path: &Path, extensions: &[(&str, &str)]) -> Result<()> {
         for (index_type, extension) in extensions {
             let index_path = base_path.with_extension(extension);
-            
+
             match *index_type {
                 "btree" => {
                     if !index_path.exists() {
@@ -248,7 +249,12 @@ impl IndexManager {
                         self.stats.size += fts.stats().size;
                     }
                 }
-                _ => return Err(DictError::Internal(format!("Unknown index type: {}", index_type))),
+                _ => {
+                    return Err(DictError::Internal(format!(
+                        "Unknown index type: {}",
+                        index_type
+                    )))
+                }
             }
         }
 
@@ -259,7 +265,7 @@ impl IndexManager {
     pub fn save_all(&self, base_path: &Path, extensions: &[(&str, &str)]) -> Result<()> {
         for (index_type, extension) in extensions {
             let index_path = base_path.with_extension(extension);
-            
+
             match *index_type {
                 "btree" => {
                     if let Some(ref btree) = self.btree {
@@ -271,7 +277,12 @@ impl IndexManager {
                         fts.save(&index_path)?;
                     }
                 }
-                _ => return Err(DictError::Internal(format!("Unknown index type: {}", index_type))),
+                _ => {
+                    return Err(DictError::Internal(format!(
+                        "Unknown index type: {}",
+                        index_type
+                    )))
+                }
             }
         }
 
@@ -283,7 +294,9 @@ impl IndexManager {
         if let Some(ref btree) = self.btree {
             btree.search(key)
         } else {
-            Err(DictError::IndexError("B-TREE index not available".to_string()))
+            Err(DictError::IndexError(
+                "B-TREE index not available".to_string(),
+            ))
         }
     }
 

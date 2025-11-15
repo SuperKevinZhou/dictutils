@@ -4,6 +4,7 @@
 //! which is used by many offline dictionary applications.
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -13,30 +14,30 @@ use memmap2::Mmap;
 use minilzo_rs::adler32;
 use parking_lot::{RwLock, RwLockReadGuard};
 
+use crate::index::{btree::BTreeIndex, fts::FtsIndex, Index, IndexConfig};
 use crate::traits::{
     BatchResult, Dict, DictConfig, DictError, DictMetadata, DictStats, EntryIterator,
     HighPerformanceDict, Result, SearchResult,
 };
-use crate::index::{btree::BTreeIndex, fts::FtsIndex, IndexConfig, Index};
+use crate::util::buffer::{self, read_string, read_u32_le, read_varint};
 use crate::util::compression::{self, CompressionAlgorithm};
 use crate::util::encoding::{self, TextEncoding};
 use crate::util::file_utils;
-use crate::util::buffer::{self, read_u32_le, read_string, read_varint};
 
- // MDict (MDX/MDD) format constants derived from mdictparser.cc / MDX spec.
- // We intentionally do NOT use the previous fake header layout.
- const MDICT_MAX_KEY_LENGTH: usize = 16 * 1024;
- const MDICT_MAX_VALUE_LENGTH: usize = 4 * 1024 * 1024; // 4MB safety cap
- const MDICT_MAX_HEADER_TEXT: usize = 512 * 1024;
- const MDICT_MAX_BLOCK_INFO: usize = 16 * 1024 * 1024;
+// MDict (MDX/MDD) format constants derived from mdictparser.cc / MDX spec.
+// We intentionally do NOT use the previous fake header layout.
+const MDICT_MAX_KEY_LENGTH: usize = 16 * 1024;
+const MDICT_MAX_VALUE_LENGTH: usize = 4 * 1024 * 1024; // 4MB safety cap
+const MDICT_MAX_HEADER_TEXT: usize = 512 * 1024;
+const MDICT_MAX_BLOCK_INFO: usize = 16 * 1024 * 1024;
 
- /// Compression types inside MDX/MDD blocks (per mdictparser.cc)
- #[derive(Debug, Clone, Copy, PartialEq, Eq)]
- enum MdictBlockCompression {
-     None,
-     Lzo,
-     Zlib,
- }
+/// Compression types inside MDX/MDD blocks (per mdictparser.cc)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MdictBlockCompression {
+    None,
+    Lzo,
+    Zlib,
+}
 
 #[derive(Debug, Clone)]
 struct MdictHeader {
@@ -139,8 +140,7 @@ impl MDict {
         }
 
         // Open file for reading
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
 
         // Read and parse header
         let header = Self::read_header(&file, path)?;
@@ -167,9 +167,7 @@ impl MDict {
         let entry_cache = Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
 
         // Build metadata from parsed MDX header attributes and file size
-        let file_size = path.metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
 
         let name = header
             .attributes
@@ -183,7 +181,10 @@ impl MDict {
             entries: header.word_count,
             description: Some(header.description.clone()).filter(|s| !s.is_empty()),
             author: header.attributes.get("Author").cloned(),
-            language: header.attributes.get("DictCharset").cloned()
+            language: header
+                .attributes
+                .get("DictCharset")
+                .cloned()
                 .or_else(|| header.attributes.get("Encoding").cloned()),
             file_size,
             created: header.attributes.get("CreationDate").cloned(),
@@ -314,35 +315,35 @@ impl MDict {
             strip_html_like(&title_attr)
         };
 
-        let description_attr = attributes
-            .get("Description")
-            .cloned()
-            .unwrap_or_default();
+        let description_attr = attributes.get("Description").cloned().unwrap_or_default();
         let description = strip_html_like(&description_attr);
 
         // Read headword block info header
         let (num_headword_blocks, word_count, headword_block_info_size, headword_block_size) =
             Self::read_headword_block_info_header(&mut reader, number_size, version)?;
-        
+
         // Read headword block info (compressed)
         let headword_block_info_pos = reader.stream_position()?;
         let mut headword_block_info_compressed = vec![0u8; headword_block_info_size as usize];
         reader.read_exact(&mut headword_block_info_compressed)?;
-        
+
         // Decrypt if needed
-        if encrypted & 2 != 0 { // EcryptedHeadWordIndex = 2
+        if encrypted & 2 != 0 {
+            // EcryptedHeadWordIndex = 2
             Self::decrypt_headword_index(&mut headword_block_info_compressed)?;
         }
-        
+
         // Decompress headword block info
         let headword_block_info = Self::decompress_block(&headword_block_info_compressed, version)?;
-        
+
         // Decode headword block info into block descriptors
-        let headword_blocks = Self::decode_headword_block_info(&headword_block_info, number_size, &encoding)?;
-        
+        let headword_blocks =
+            Self::decode_headword_block_info(&headword_block_info, number_size, &encoding)?;
+
         // Read record block info
-        let (record_blocks, total_records_size) = Self::read_record_block_infos(&mut reader, number_size)?;
-        
+        let (record_blocks, total_records_size) =
+            Self::read_record_block_infos(&mut reader, number_size)?;
+
         Ok(MdictHeader {
             encoding,
             version,
@@ -375,25 +376,25 @@ impl MDict {
         } else {
             number_size as u64 * 4 // 4 numbers: num_blocks, word_count, compressed_size, block_size
         };
-        
+
         let mut header_buf = vec![0u8; header_size as usize];
         reader.read_exact(&mut header_buf)?;
-        
+
         let mut cursor = std::io::Cursor::new(header_buf);
-        
+
         // Read numbers based on number_size
         let num_blocks = if number_size == 8 {
             buffer::read_u64_be(&mut cursor)?
         } else {
             buffer::read_u32_be(&mut cursor)? as u64
         };
-        
+
         let word_count = if number_size == 8 {
             buffer::read_u64_be(&mut cursor)?
         } else {
             buffer::read_u32_be(&mut cursor)? as u64
         };
-        
+
         let _decompressed_size = if version >= 2.0 {
             if number_size == 8 {
                 buffer::read_u64_be(&mut cursor)?
@@ -403,19 +404,19 @@ impl MDict {
         } else {
             0
         };
-        
+
         let compressed_size = if number_size == 8 {
             buffer::read_u64_be(&mut cursor)?
         } else {
             buffer::read_u32_be(&mut cursor)? as u64
         };
-        
+
         let block_size = if number_size == 8 {
             buffer::read_u64_be(&mut cursor)?
         } else {
             buffer::read_u32_be(&mut cursor)? as u64
         };
-        
+
         // Read and verify checksum for version >= 2.0
         if version >= 2.0 {
             let checksum = buffer::read_u32_le(reader)?;
@@ -426,7 +427,7 @@ impl MDict {
                 ));
             }
         }
-        
+
         Ok((num_blocks, word_count, compressed_size, block_size))
     }
 
@@ -439,7 +440,7 @@ impl MDict {
                 "Buffer too small for decryption".to_string(),
             ));
         }
-        
+
         // RIPEMD128 key derivation (simplified)
         let mut key = [0u8; 16];
         // Use first 4 bytes + magic constant
@@ -449,7 +450,7 @@ impl MDict {
         for i in 8..16 {
             key[i] = (i as u8) ^ 0x36;
         }
-        
+
         // Apply XOR decryption
         let mut prev = 0x36u8;
         for i in 8..buffer.len() {
@@ -459,7 +460,7 @@ impl MDict {
             prev = buffer[i];
             buffer[i] = byte;
         }
-        
+
         Ok(())
     }
 
@@ -470,12 +471,12 @@ impl MDict {
                 "Compressed block too small".to_string(),
             ));
         }
-        
+
         // Read compression type and checksum
         let compression_type = buffer::read_u32_be(&mut std::io::Cursor::new(&compressed[0..4]))?;
         let checksum = buffer::read_u32_le(&mut std::io::Cursor::new(&compressed[4..8]))?;
         let data = &compressed[8..];
-        
+
         let decompressed = match compression_type {
             0x00000000 => {
                 // No compression
@@ -488,12 +489,14 @@ impl MDict {
             }
             0x01000000 => {
                 // LZO compression
-                let mut lzo = minilzo_rs::LZO::init()
-                    .map_err(|e| DictError::DecompressionError(format!("LZO initialization failed: {:?}", e)))?;
+                let mut lzo = minilzo_rs::LZO::init().map_err(|e| {
+                    DictError::DecompressionError(format!("LZO initialization failed: {:?}", e))
+                })?;
                 let estimated_size = data.len() * 4; // Estimate size
-                let decompressed = lzo.decompress_safe(data, estimated_size)
-                    .map_err(|e| DictError::DecompressionError(format!("LZO decompression failed: {:?}", e)))?;
-                
+                let decompressed = lzo.decompress_safe(data, estimated_size).map_err(|e| {
+                    DictError::DecompressionError(format!("LZO decompression failed: {:?}", e))
+                })?;
+
                 if !Self::check_adler32(&decompressed, checksum) {
                     return Err(DictError::InvalidFormat(
                         "Adler-32 checksum mismatch for LZO data".to_string(),
@@ -505,12 +508,13 @@ impl MDict {
                 // zlib compression
                 use flate2::read::ZlibDecoder;
                 use std::io::Read;
-                
+
                 let mut decoder = ZlibDecoder::new(data);
                 let mut decompressed = Vec::new();
-                decoder.read_to_end(&mut decompressed)
-                    .map_err(|e| DictError::DecompressionError(format!("Zlib decompression failed: {}", e)))?;
-                
+                decoder.read_to_end(&mut decompressed).map_err(|e| {
+                    DictError::DecompressionError(format!("Zlib decompression failed: {}", e))
+                })?;
+
                 if !Self::check_adler32(&decompressed, checksum) {
                     return Err(DictError::InvalidFormat(
                         "Adler-32 checksum mismatch for zlib data".to_string(),
@@ -519,12 +523,13 @@ impl MDict {
                 decompressed
             }
             _ => {
-                return Err(DictError::InvalidFormat(
-                    format!("Unknown compression type: 0x{:08X}", compression_type),
-                ));
+                return Err(DictError::InvalidFormat(format!(
+                    "Unknown compression type: 0x{:08X}",
+                    compression_type
+                )));
             }
         };
-        
+
         Ok(decompressed)
     }
 
@@ -533,12 +538,12 @@ impl MDict {
         const MOD_ADLER: u32 = 65521;
         let mut a: u32 = 1;
         let mut b: u32 = 0;
-        
+
         for &byte in data {
             a = (a + byte as u32) % MOD_ADLER;
             b = (b + a) % MOD_ADLER;
         }
-        
+
         let actual = (b << 16) | a;
         actual == expected
     }
@@ -551,10 +556,10 @@ impl MDict {
     ) -> Result<Vec<(u64, u64)>> {
         let mut blocks = Vec::new();
         let mut cursor = std::io::Cursor::new(data);
-        
+
         let is_u16 = encoding == "UTF-16LE";
         let term_size = if is_u16 { 2 } else { 1 };
-        
+
         while cursor.position() < data.len() as u64 {
             // Skip number of keywords (we don't need it for basic parsing)
             if number_size == 8 {
@@ -562,39 +567,43 @@ impl MDict {
             } else {
                 buffer::read_u32_be(&mut cursor)?;
             }
-            
+
             // Read first headword size and skip it
             let first_size = if is_u16 {
                 buffer::read_u16_be(&mut cursor)? as u64
             } else {
                 buffer::read_u8(&mut cursor)? as u64
             };
-            cursor.seek(std::io::SeekFrom::Current((first_size + term_size as u64) as i64))?;
-            
+            cursor.seek(std::io::SeekFrom::Current(
+                (first_size + term_size as u64) as i64,
+            ))?;
+
             // Read last headword size and skip it
             let last_size = if is_u16 {
                 buffer::read_u16_be(&mut cursor)? as u64
             } else {
                 buffer::read_u8(&mut cursor)? as u64
             };
-            cursor.seek(std::io::SeekFrom::Current((last_size + term_size as u64) as i64))?;
-            
+            cursor.seek(std::io::SeekFrom::Current(
+                (last_size + term_size as u64) as i64,
+            ))?;
+
             // Read compressed and decompressed sizes
             let compressed_size = if number_size == 8 {
                 buffer::read_u64_be(&mut cursor)?
             } else {
                 buffer::read_u32_be(&mut cursor)? as u64
             };
-            
+
             let decompressed_size = if number_size == 8 {
                 buffer::read_u64_be(&mut cursor)?
             } else {
                 buffer::read_u32_be(&mut cursor)? as u64
             };
-            
+
             blocks.push((compressed_size, decompressed_size));
         }
-        
+
         Ok(blocks)
     }
 
@@ -608,53 +617,53 @@ impl MDict {
         } else {
             buffer::read_u32_be(reader)? as u64
         };
-        
+
         let total_records = if number_size == 8 {
             buffer::read_u64_be(reader)?
         } else {
             buffer::read_u32_be(reader)? as u64
         };
-        
+
         let info_size = if number_size == 8 {
             buffer::read_u64_be(reader)?
         } else {
             buffer::read_u32_be(reader)? as u64
         };
-        
+
         let total_decompressed_size = if number_size == 8 {
             buffer::read_u64_be(reader)?
         } else {
             buffer::read_u32_be(reader)? as u64
         };
-        
+
         let record_block_info_pos = reader.stream_position()?;
-        
+
         // Read compressed record block info
         let mut info_compressed = vec![0u8; info_size as usize];
         reader.read_exact(&mut info_compressed)?;
-        
+
         // Decompress record block info (usually uncompressed or zlib)
         let info_decompressed = Self::decompress_block(&info_compressed, 2.0)?; // Assume version >= 2.0
-        
+
         // Parse record block descriptors
         let mut record_blocks = Vec::with_capacity(num_blocks as usize);
         let mut cursor = std::io::Cursor::new(info_decompressed);
         let mut acc_compressed = 0u64;
         let mut acc_decompressed = 0u64;
-        
+
         for _ in 0..num_blocks {
             let compressed_size = if number_size == 8 {
                 buffer::read_u64_be(&mut cursor)?
             } else {
                 buffer::read_u32_be(&mut cursor)? as u64
             };
-            
+
             let decompressed_size = if number_size == 8 {
                 buffer::read_u64_be(&mut cursor)?
             } else {
                 buffer::read_u32_be(&mut cursor)? as u64
             };
-            
+
             let record_index = RecordIndex {
                 compressed_size,
                 decompressed_size,
@@ -662,12 +671,12 @@ impl MDict {
                 shadow_start_pos: acc_decompressed,
                 shadow_end_pos: acc_decompressed + decompressed_size,
             };
-            
+
             record_blocks.push(record_index);
             acc_compressed += compressed_size;
             acc_decompressed += decompressed_size;
         }
-        
+
         Ok((record_blocks, total_decompressed_size))
     }
 
@@ -731,36 +740,55 @@ impl MDict {
         Ok((btree_index, fts_index))
     }
 
+    /// Ensure requested entry range stays within the underlying file boundaries.
+    fn validate_entry_window(&self, offset: u64, length: u64) -> Result<(u64, usize)> {
+        if length as usize > MDICT_MAX_VALUE_LENGTH {
+            return Err(DictError::Internal(format!(
+                "Entry too large: {} bytes",
+                length
+            )));
+        }
+
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| DictError::InvalidFormat("Entry offset/length overflow".to_string()))?;
+
+        if end > self.header.file_size {
+            return Err(DictError::InvalidFormat(format!(
+                "Entry range {}..{} exceeds file size {}",
+                offset, end, self.header.file_size
+            )));
+        }
+
+        let len_usize = usize::try_from(length).map_err(|_| {
+            DictError::InvalidFormat("Entry length does not fit in memory".to_string())
+        })?;
+
+        Ok((end, len_usize))
+    }
+
     /// Read entry from file using offset
     fn read_entry_at_offset(&self, offset: u64, length: u64) -> Result<Vec<u8>> {
-        if length as usize > MDICT_MAX_VALUE_LENGTH {
-            return Err(DictError::Internal(
-                format!("Entry too large: {} bytes", length)
-            ));
+        let (end, len_usize) = self.validate_entry_window(offset, length)?;
+        if len_usize == 0 {
+            return Ok(Vec::new());
         }
 
         let data = if let Some(ref mmap) = self.mmap {
-            // Read from memory-mapped file
-            let end = offset + length;
             if end > mmap.len() as u64 {
-                return Err(DictError::IoError("Read past file end".to_string()));
+                return Err(DictError::IoError("Read past mapped file".to_string()));
             }
             mmap[offset as usize..end as usize].to_vec()
         } else if let Some(ref file) = self.file {
-            // Read from regular file
             let mut reader = BufReader::new(file);
             reader.seek(SeekFrom::Start(offset))?;
-            let mut buffer = vec![0u8; length as usize];
+            let mut buffer = vec![0u8; len_usize];
             reader.read_exact(&mut buffer)?;
             buffer
         } else {
             return Err(DictError::Internal("No file handle available".to_string()));
         };
 
-        // MDX block contents can be individually compressed; this helper assumes
-        // "length" already reflects the uncompressed size if decompression was
-        // applied at index-building time. For the lightweight parser we do not
-        // apply additional compression flags from the header here.
         Ok(data)
     }
 
@@ -789,7 +817,7 @@ impl MDict {
             // Without B-TREE, we can't efficiently search
             return Ok(None);
         }
-        
+
         // Legacy fallback - no block info available
         Ok(None)
     }
@@ -825,23 +853,24 @@ impl MDict {
 
         // We require at least one way to enumerate keys. Since a full MDX parser for
         // key/record blocks is out of scope here, rely on an existing B-TREE index.
-        let base_btree = match &self.btree_index {
-            Some(idx) => idx,
-            None => {
-                return Err(DictError::UnsupportedOperation(
+        let base_btree =
+            match &self.btree_index {
+                Some(idx) => idx,
+                None => return Err(DictError::UnsupportedOperation(
                     "MDict index building requires an existing B-TREE index for key enumeration"
                         .to_string(),
-                ))
-            }
-        };
+                )),
+            };
 
         // Collect entries by iterating over existing B-TREE range.
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut btree_sidecar: Vec<(String, Vec<u8>)> = Vec::new();
         let all = base_btree.range_query("", "\u{10FFFF}")?;
-        for (key, _offset) in all {
+        for (key, offset) in all {
             // Use public API to obtain value
             if let Ok(value) = self.get(&key) {
-                entries.push((key, value));
+                entries.push((key.clone(), value));
+                btree_sidecar.push((key, offset.to_le_bytes().to_vec()));
             }
         }
 
@@ -856,7 +885,7 @@ impl MDict {
         if self.config.load_btree {
             let mut btree = BTreeIndex::new();
             let index_config = IndexConfig::default();
-            btree.build(&entries, &index_config)?;
+            btree.build(&btree_sidecar, &index_config)?;
             if !btree.is_built() {
                 return Err(DictError::IndexError(
                     "MDict B-TREE index build produced an empty index".to_string(),
@@ -909,15 +938,15 @@ impl MDict {
     /// Get file paths for this dictionary
     pub fn file_paths(&self) -> Vec<std::path::PathBuf> {
         let mut paths = vec![self.file_path.clone()];
-        
+
         if let Some(ref _btree) = self.btree_index {
             paths.push(self.file_path.with_extension("btree"));
         }
-        
+
         if let Some(ref _fts) = self.fts_index {
             paths.push(self.file_path.with_extension("fts"));
         }
-        
+
         paths
     }
 }
@@ -959,7 +988,7 @@ impl Dict<String> for MDict {
         // Use B-TREE for prefix search if available
         if let Some(ref btree) = self.btree_index {
             let range_results = btree.range_query(prefix, &(prefix.to_string() + "\u{10FFFF}"))?;
-            
+
             for (key, _offset) in range_results.iter().take(limit) {
                 if key.starts_with(prefix) {
                     match self.get(&key.to_string()) {
@@ -989,7 +1018,10 @@ impl Dict<String> for MDict {
         self.search_prefix(query, None)
     }
 
-    fn search_fulltext(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>> + Send>> {
+    fn search_fulltext(
+        &self,
+        query: &str,
+    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>> + Send>> {
         if let Some(ref fts) = self.fts_index {
             // Collect results eagerly into an owned Vec so the iterator can be 'static.
             let search_results = fts.search(query)?;
@@ -1015,7 +1047,7 @@ impl Dict<String> for MDict {
             Ok(Box::new(items.into_iter()))
         } else {
             Err(DictError::UnsupportedOperation(
-                "FTS index not available".to_string()
+                "FTS index not available".to_string(),
             ))
         }
     }
@@ -1108,95 +1140,75 @@ impl Dict<String> for MDict {
     }
 }
 
- /// Parse the pseudo-XML MDX header attributes into a key-value map.
- /// Minimal implementation matching the needs of this crate.
- fn parse_mdict_header_attributes(header: &str) -> HashMap<String, String> {
-     let mut attrs = HashMap::new();
+/// Parse the pseudo-XML MDX header attributes into a key-value map.
+/// Minimal implementation matching the needs of this crate.
+fn parse_mdict_header_attributes(header: &str) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
 
-     // Find first '<' ... '>' block
-     let start = match header.find('<') {
-         Some(s) => s,
-         None => return attrs,
-     };
-     let end = match header[start..].find('>') {
-         Some(e) => start + e,
-         None => return attrs,
-     };
-     let elem = &header[start + 1..end]; // strip '<' and '>'
+    // Find first '<' ... '>' block
+    let start = match header.find('<') {
+        Some(s) => s,
+        None => return attrs,
+    };
+    let end = match header[start..].find('>') {
+        Some(e) => start + e,
+        None => return attrs,
+    };
+    let elem = &header[start + 1..end]; // strip '<' and '>'
 
-     // Split into tokens, first token is tag name
-     let mut iter = elem.split_whitespace();
-     iter.next();
-     for token in iter {
-         let mut parts = token.splitn(2, '=');
-         let key = match parts.next() {
-             Some(k) if !k.is_empty() => k,
-             _ => continue,
-         };
-         let val_raw = match parts.next() {
-             Some(v) => v.trim(),
-             None => continue,
-         };
+    // Split into tokens, first token is tag name
+    let mut iter = elem.split_whitespace();
+    iter.next();
+    for token in iter {
+        let mut parts = token.splitn(2, '=');
+        let key = match parts.next() {
+            Some(k) if !k.is_empty() => k,
+            _ => continue,
+        };
+        let val_raw = match parts.next() {
+            Some(v) => v.trim(),
+            None => continue,
+        };
 
-         let mut v = val_raw.trim_matches(|c| c == '"' || c == '\'');
-         // Some headers contain trailing '/>'; strip trailing '>' if present
-         if let Some(stripped) = v.strip_suffix('>') {
-             v = stripped.trim();
-         }
+        let mut v = val_raw.trim_matches(|c| c == '"' || c == '\'');
+        // Some headers contain trailing '/>'; strip trailing '>' if present
+        if let Some(stripped) = v.strip_suffix('>') {
+            v = stripped.trim();
+        }
 
-         attrs.insert(key.to_string(), v.to_string());
-     }
+        attrs.insert(key.to_string(), v.to_string());
+    }
 
-     attrs
- }
+    attrs
+}
 
- /// Strip simple HTML-like tags from a string, used for Title/Description.
- fn strip_html_like(input: &str) -> String {
-     let mut out = String::with_capacity(input.len());
-     let mut in_tag = false;
-     for c in input.chars() {
-         match c {
-             '<' => in_tag = true,
-             '>' => in_tag = false,
-             _ if !in_tag => out.push(c),
-             _ => {}
-         }
-     }
-     out.trim().to_string()
- }
+/// Strip simple HTML-like tags from a string, used for Title/Description.
+fn strip_html_like(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for c in input.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
 
 impl HighPerformanceDict<String> for MDict {
     fn binary_search_get(&self, key: &String) -> Result<Vec<u8>> {
         self.get(key)
     }
 
-    #[cfg(feature = "rayon")]
-    fn parallel_get_multiple(&self, keys: &[String]) -> Result<Vec<BatchResult>> {
-        use rayon::prelude::*;
 
-        let dict = self;
-        let results: Vec<BatchResult> = keys
-            .par_iter()
-            .map(|key| {
-                match dict.get(key) {
-                    Ok(entry) => BatchResult {
-                        word: key.clone(),
-                        entry: Some(entry),
-                        error: None,
-                    },
-                    Err(e) => BatchResult {
-                        word: key.clone(),
-                        entry: None,
-                        error: Some(e),
-                    },
-                }
-            })
-            .collect();
-
-        Ok(results)
-    }
-
-    fn stream_search(&self, _query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
-        Err(DictError::UnsupportedOperation("Stream search not implemented".to_string()))
+    fn stream_search(
+        &self,
+        _query: &str,
+    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
+        Err(DictError::UnsupportedOperation(
+            "Stream search not implemented".to_string(),
+        ))
     }
 }

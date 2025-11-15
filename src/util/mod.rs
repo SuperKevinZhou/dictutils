@@ -4,7 +4,7 @@
 //! encoding detection, and other common operations used by dictionary implementations.
 
 use std::fs::File;
-use std::io::{self, Read, Write, Seek, SeekFrom, BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::result::Result as StdResult;
 
@@ -12,8 +12,8 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-use zstd::{Decoder, Encoder};
 use serde::{Deserialize, Serialize};
+use zstd::{Decoder, Encoder};
 
 use crate::traits::{DictError, Result};
 
@@ -26,21 +26,19 @@ pub mod file_utils {
 
     /// Read entire file into memory
     pub fn read_file(path: &Path) -> Result<Vec<u8>> {
-        let mut file = File::open(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+        let mut file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
             .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+
         Ok(buffer)
     }
 
     /// Read file with memory mapping
     pub fn read_file_mmap(path: &Path) -> Result<memmap2::Mmap> {
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+        let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         unsafe {
             memmap2::MmapOptions::new()
                 .map(&file)
@@ -51,26 +49,23 @@ pub mod file_utils {
     /// Write data to file with atomic operations
     pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
         let temp_path = path.with_extension("tmp");
-        let mut file = File::create(&temp_path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+        let mut file = File::create(&temp_path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         file.write_all(data)
             .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+
         file.sync_all()
             .map_err(|e| DictError::IoError(e.to_string()))?;
-        
-        std::fs::rename(&temp_path, path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+
+        std::fs::rename(&temp_path, path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         Ok(())
     }
 
     /// Get file size
     pub fn file_size(path: &Path) -> Result<u64> {
-        let metadata = std::fs::metadata(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+        let metadata = std::fs::metadata(path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         Ok(metadata.len())
     }
 
@@ -83,8 +78,7 @@ pub mod file_utils {
     pub fn ensure_dir(path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             if !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| DictError::IoError(e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(|e| DictError::IoError(e.to_string()))?;
             }
         }
         Ok(())
@@ -158,14 +152,14 @@ pub mod buffer {
             let mut byte = [0u8; 1];
             read_exact(reader, &mut byte)?;
             let b = byte[0];
-            
+
             result |= ((b & 0x7F) as u64) << shift;
             shift += 7;
-            
+
             if (b & 0x80) == 0 {
                 break;
             }
-            
+
             if shift > 63 {
                 return Err(DictError::Internal("VARINT too large".to_string()));
             }
@@ -174,14 +168,17 @@ pub mod buffer {
     }
 
     /// Read length-prefixed string
-    pub fn read_string<R: Read, F: FnMut(String) -> Result<()>>(reader: &mut R, mut callback: F) -> Result<()> {
+    pub fn read_string<R: Read, F: FnMut(String) -> Result<()>>(
+        reader: &mut R,
+        mut callback: F,
+    ) -> Result<()> {
         let length = read_varint(reader)? as usize;
         let mut buffer = vec![0u8; length];
         read_exact(reader, &mut buffer)?;
-        
+
         let s = String::from_utf8(buffer)
             .map_err(|e| DictError::Internal(format!("Invalid UTF-8: {}", e)))?;
-        
+
         callback(s)
     }
 
@@ -229,13 +226,13 @@ pub mod buffer {
         loop {
             let mut byte = (value & 0x7F) as u8;
             value >>= 7;
-            
+
             if value > 0 {
                 byte |= 0x80;
             }
-            
+
             write_all(writer, &[byte])?;
-            
+
             if value == 0 {
                 break;
             }
@@ -287,7 +284,7 @@ pub mod binary_search {
         K: Ord,
     {
         assert_eq!(keys.len(), values.len());
-        
+
         let mut left = 0;
         let mut right = keys.len();
 
@@ -357,7 +354,7 @@ pub mod memory {
     pub fn optimal_cache_size(entries: usize, avg_entry_size: usize) -> usize {
         let total_size = entries as u64 * avg_entry_size as u64;
         let available = total_memory() / 2; // Use half of available memory
-        
+
         if total_size <= available {
             entries // Cache everything
         } else {
@@ -391,7 +388,10 @@ pub mod memory {
     /// Securely zero sensitive data
     pub fn zero_sensitive<T: Default>(data: &mut T) {
         unsafe {
-            std::ptr::write_volatile(data as *mut T, std::mem::MaybeUninit::zeroed().assume_init());
+            std::ptr::write_volatile(
+                data as *mut T,
+                std::mem::MaybeUninit::zeroed().assume_init(),
+            );
         }
     }
 }
@@ -495,14 +495,12 @@ pub mod serialization {
 
     /// Serialize data with error handling
     pub fn serialize_to_vec<T: serde::Serialize>(data: &T) -> Result<Vec<u8>> {
-        bincode::serialize(data)
-            .map_err(|e| DictError::SerializationError(e.to_string()))
+        bincode::serialize(data).map_err(|e| DictError::SerializationError(e.to_string()))
     }
 
     /// Deserialize data with error handling
     pub fn deserialize_from_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-        bincode::deserialize(bytes)
-            .map_err(|e| DictError::SerializationError(e.to_string()))
+        bincode::deserialize(bytes).map_err(|e| DictError::SerializationError(e.to_string()))
     }
 
     /// Serialize and compress data
@@ -552,14 +550,14 @@ pub mod serialization {
         expected_version: &str,
     ) -> Result<T> {
         let wrapper: SerializedData<T> = deserialize_from_bytes(bytes)?;
-        
+
         if wrapper.version != expected_version {
             return Err(DictError::SerializationError(format!(
                 "Version mismatch: expected {}, got {}",
                 expected_version, wrapper.version
             )));
         }
-        
+
         Ok(wrapper.data)
     }
 }
@@ -600,41 +598,41 @@ pub mod test_utils {
     /// Generate test dictionary entries
     pub fn generate_test_entries(count: usize) -> Vec<(String, Vec<u8>)> {
         let mut entries = Vec::new();
-        
+
         for i in 0..count {
             let key = format!("word_{:06}", i);
             let content = format!("Definition for word {}: This is a test definition that contains multiple words for testing full text search functionality.", i);
             entries.push((key, content.into_bytes()));
         }
-        
+
         entries
     }
 
     /// Create a temporary directory for testing
     pub fn temp_dir() -> Result<std::path::PathBuf> {
         let temp_dir = std::env::temp_dir().join(format!("dict_test_{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        std::fs::create_dir_all(&temp_dir).map_err(|e| DictError::IoError(e.to_string()))?;
         Ok(temp_dir)
     }
 
     /// Clean up temporary directory
     pub fn cleanup_temp_dir(path: &std::path::Path) -> Result<()> {
         if path.exists() {
-            std::fs::remove_dir_all(path)
-                .map_err(|e| DictError::IoError(e.to_string()))?;
+            std::fs::remove_dir_all(path).map_err(|e| DictError::IoError(e.to_string()))?;
         }
         Ok(())
     }
 
     /// Validate dictionary integrity
-    pub fn validate_dictionary_integrity<K: std::fmt::Display + std::cmp::PartialEq + std::cmp::Ord>(
+    pub fn validate_dictionary_integrity<
+        K: std::fmt::Display + std::cmp::PartialEq + std::cmp::Ord,
+    >(
         entries: &[(K, Vec<u8>)],
     ) -> Result<()> {
         // Check for duplicate keys
         let mut keys = entries.iter().map(|(k, _)| k).collect::<Vec<_>>();
         keys.sort();
-        
+
         for window in keys.windows(2) {
             if window[0] == window[1] {
                 return Err(DictError::Internal(format!(
@@ -643,7 +641,7 @@ pub mod test_utils {
                 )));
             }
         }
-        
+
         // Check for empty keys
         for (key, content) in entries {
             if key.to_string().is_empty() {
@@ -656,7 +654,7 @@ pub mod test_utils {
                 )));
             }
         }
-        
+
         Ok(())
     }
 
@@ -671,7 +669,7 @@ pub mod test_utils {
         D: crate::traits::Dict<K>,
     {
         let mut results = std::collections::HashMap::new();
-        
+
         // Benchmark single lookups
         let lookup_times: Vec<_> = (0..iterations)
             .flat_map(|i| {
@@ -682,14 +680,13 @@ pub mod test_utils {
                 })
             })
             .collect();
-        
+
         if !lookup_times.is_empty() {
-            let avg_lookup_time = lookup_times.iter()
-                .map(|d| d.as_secs_f64())
-                .sum::<f64>() / lookup_times.len() as f64;
+            let avg_lookup_time = lookup_times.iter().map(|d| d.as_secs_f64()).sum::<f64>()
+                / lookup_times.len() as f64;
             results.insert("avg_lookup_time_ms".to_string(), avg_lookup_time * 1000.0);
         }
-        
+
         // Benchmark batch operations
         if !test_keys.is_empty() {
             let batch_size = std::cmp::min(test_keys.len(), 100);
@@ -701,7 +698,7 @@ pub mod test_utils {
             let batch_time = start.elapsed().as_secs_f64() / iterations as f64;
             results.insert("avg_batch_time_ms".to_string(), batch_time * 1000.0);
         }
-        
+
         Ok(results)
     }
 }

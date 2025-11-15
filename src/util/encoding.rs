@@ -3,9 +3,9 @@
 //! This module provides functions for detecting text encodings,
 //! converting between different encodings, and handling UTF-8 validation.
 
-use std::str;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
+use std::str;
 
 use crate::traits::{DictError, Result};
 
@@ -64,10 +64,10 @@ impl TextEncoding {
         matches!(
             self,
             TextEncoding::Utf8
-            | TextEncoding::Gb2312
-            | TextEncoding::Big5
-            | TextEncoding::ShiftJis
-            | TextEncoding::EucKr
+                | TextEncoding::Gb2312
+                | TextEncoding::Big5
+                | TextEncoding::ShiftJis
+                | TextEncoding::EucKr
         )
     }
 
@@ -77,7 +77,10 @@ impl TextEncoding {
             TextEncoding::Utf8 => 4,
             TextEncoding::Utf16Le | TextEncoding::Utf16Be => 2,
             TextEncoding::Windows1252 | TextEncoding::Iso88591 => 1,
-            TextEncoding::Gb2312 | TextEncoding::Big5 | TextEncoding::ShiftJis | TextEncoding::EucKr => 2,
+            TextEncoding::Gb2312
+            | TextEncoding::Big5
+            | TextEncoding::ShiftJis
+            | TextEncoding::EucKr => 2,
             TextEncoding::Unknown => 1,
         }
     }
@@ -101,26 +104,26 @@ pub fn detect_encoding(data: &[u8]) -> Result<TextEncoding> {
 
     // Statistical analysis for other encodings
     let mut scores = HashMap::new();
-    
+
     // Score Windows-1252
     scores.insert(TextEncoding::Windows1252, score_windows1252(data));
-    
+
     // Score GB2312
     scores.insert(TextEncoding::Gb2312, score_gb2312(data));
-    
+
     // Score Big5
     scores.insert(TextEncoding::Big5, score_big5(data));
-    
+
     // Score Shift-JIS
     scores.insert(TextEncoding::ShiftJis, score_shift_jis(data));
-    
+
     // Score EUC-KR
     scores.insert(TextEncoding::EucKr, score_euc_kr(data));
-    
+
     // Find encoding with highest score
     let mut best_encoding = TextEncoding::Unknown;
     let mut best_score = -1.0f32;
-    
+
     for (encoding, score) in scores {
         if score > best_score {
             best_encoding = encoding;
@@ -156,25 +159,29 @@ fn detect_bom(data: &[u8]) -> Option<TextEncoding> {
 /// Check if data is valid UTF-8
 fn is_valid_utf8(data: &[u8]) -> bool {
     let mut i = 0;
-    
+
     while i < data.len() {
         let byte = data[i];
-        
+
         if byte & 0x80 == 0 {
             // Single-byte character (0xxxxxxx)
             i += 1;
         } else if byte & 0xE0 == 0xC0 && i + 1 < data.len() && (data[i + 1] & 0xC0) == 0x80 {
             // Two-byte character (110xxxxx 10xxxxxx)
             i += 2;
-        } else if byte & 0xF0 == 0xE0 && i + 2 < data.len() 
-                  && (data[i + 1] & 0xC0) == 0x80 
-                  && (data[i + 2] & 0xC0) == 0x80 {
+        } else if byte & 0xF0 == 0xE0
+            && i + 2 < data.len()
+            && (data[i + 1] & 0xC0) == 0x80
+            && (data[i + 2] & 0xC0) == 0x80
+        {
             // Three-byte character (1110xxxx 10xxxxxx 10xxxxxx)
             i += 3;
-        } else if byte & 0xF8 == 0xF0 && i + 3 < data.len()
-                  && (data[i + 1] & 0xC0) == 0x80
-                  && (data[i + 2] & 0xC0) == 0x80
-                  && (data[i + 3] & 0xC0) == 0x80 {
+        } else if byte & 0xF8 == 0xF0
+            && i + 3 < data.len()
+            && (data[i + 1] & 0xC0) == 0x80
+            && (data[i + 2] & 0xC0) == 0x80
+            && (data[i + 3] & 0xC0) == 0x80
+        {
             // Four-byte character (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
             i += 4;
         } else {
@@ -182,7 +189,7 @@ fn is_valid_utf8(data: &[u8]) -> bool {
             return false;
         }
     }
-    
+
     true
 }
 
@@ -195,7 +202,7 @@ fn is_ascii_only(data: &[u8]) -> bool {
 fn score_windows1252(data: &[u8]) -> f32 {
     let mut score = 0.0;
     let mut printable_count = 0;
-    
+
     for &byte in data {
         if byte < 0x20 {
             // Control characters - may be valid in some contexts
@@ -212,7 +219,7 @@ fn score_windows1252(data: &[u8]) -> f32 {
             score -= 0.5;
         }
     }
-    
+
     if printable_count > 0 {
         score / (data.len() as f32)
     } else {
@@ -224,7 +231,7 @@ fn score_windows1252(data: &[u8]) -> f32 {
 fn score_gb2312(data: &[u8]) -> f32 {
     let mut score = 0.0;
     let mut i = 0;
-    
+
     while i < data.len() {
         if data[i] < 0x80 {
             // ASCII character
@@ -236,10 +243,11 @@ fn score_gb2312(data: &[u8]) -> f32 {
             // Double-byte character
             let byte1 = data[i];
             let byte2 = data[i + 1];
-            
+
             if (byte1 >= 0xA1 && byte1 <= 0xF7 && byte2 >= 0xA1 && byte2 <= 0xFE)
                 || (byte1 >= 0xA8 && byte1 <= 0xA8 && byte2 >= 0xA1 && byte2 <= 0xFE)
-                || (byte1 >= 0xA9 && byte1 <= 0xA9 && byte2 >= 0xA1 && byte2 <= 0xFE) {
+                || (byte1 >= 0xA9 && byte1 <= 0xA9 && byte2 >= 0xA1 && byte2 <= 0xFE)
+            {
                 score += 2.0;
             } else {
                 score -= 1.0;
@@ -250,7 +258,7 @@ fn score_gb2312(data: &[u8]) -> f32 {
             i += 1;
         }
     }
-    
+
     if data.len() > 0 {
         score / (data.len() as f32 / 2.0)
     } else {
@@ -262,7 +270,7 @@ fn score_gb2312(data: &[u8]) -> f32 {
 fn score_big5(data: &[u8]) -> f32 {
     let mut score = 0.0;
     let mut i = 0;
-    
+
     while i < data.len() {
         if data[i] < 0x80 {
             // ASCII character
@@ -274,9 +282,11 @@ fn score_big5(data: &[u8]) -> f32 {
             // Double-byte character
             let byte1 = data[i];
             let byte2 = data[i + 1];
-            
-            if ((byte1 >= 0xA1 && byte1 <= 0xFE) && (byte2 >= 0x40 && byte2 <= 0x7E || byte2 >= 0xA1 && byte2 <= 0xFE))
-                || (byte1 == 0x87 && byte2 >= 0xA1 && byte2 <= 0xFE) {
+
+            if ((byte1 >= 0xA1 && byte1 <= 0xFE)
+                && (byte2 >= 0x40 && byte2 <= 0x7E || byte2 >= 0xA1 && byte2 <= 0xFE))
+                || (byte1 == 0x87 && byte2 >= 0xA1 && byte2 <= 0xFE)
+            {
                 score += 2.0;
             } else {
                 score -= 1.0;
@@ -287,7 +297,7 @@ fn score_big5(data: &[u8]) -> f32 {
             i += 1;
         }
     }
-    
+
     if data.len() > 0 {
         score / (data.len() as f32 / 2.0)
     } else {
@@ -299,7 +309,7 @@ fn score_big5(data: &[u8]) -> f32 {
 fn score_shift_jis(data: &[u8]) -> f32 {
     let mut score = 0.0;
     let mut i = 0;
-    
+
     while i < data.len() {
         if data[i] < 0x80 {
             // Single-byte character
@@ -327,7 +337,7 @@ fn score_shift_jis(data: &[u8]) -> f32 {
             i += 1;
         }
     }
-    
+
     if data.len() > 0 {
         score / (data.len() as f32 / 2.0)
     } else {
@@ -339,7 +349,7 @@ fn score_shift_jis(data: &[u8]) -> f32 {
 fn score_euc_kr(data: &[u8]) -> f32 {
     let mut score = 0.0;
     let mut i = 0;
-    
+
     while i < data.len() {
         if data[i] < 0x80 {
             // Single-byte character
@@ -351,7 +361,7 @@ fn score_euc_kr(data: &[u8]) -> f32 {
             // Double-byte character
             let byte1 = data[i];
             let byte2 = data[i + 1];
-            
+
             if byte1 >= 0xA1 && byte1 <= 0xFE && byte2 >= 0xA1 && byte2 <= 0xFE {
                 score += 2.0;
             } else {
@@ -363,7 +373,7 @@ fn score_euc_kr(data: &[u8]) -> f32 {
             i += 1;
         }
     }
-    
+
     if data.len() > 0 {
         score / (data.len() as f32 / 2.0)
     } else {
@@ -374,35 +384,17 @@ fn score_euc_kr(data: &[u8]) -> f32 {
 /// Convert byte data from one encoding to UTF-8 string
 pub fn convert_to_utf8(data: &[u8], from_encoding: TextEncoding) -> Result<String> {
     match from_encoding {
-        TextEncoding::Utf8 => {
-            str::from_utf8(data)
-                .map_err(|e| DictError::Internal(format!("Invalid UTF-8: {}", e)))
-                .map(|s| s.to_string())
-        }
-        TextEncoding::Windows1252 => {
-            convert_windows1252_to_utf8(data)
-        }
-        TextEncoding::Iso88591 => {
-            convert_iso88591_to_utf8(data)
-        }
-        TextEncoding::Gb2312 => {
-            convert_gb2312_to_utf8(data)
-        }
-        TextEncoding::Big5 => {
-            convert_big5_to_utf8(data)
-        }
-        TextEncoding::ShiftJis => {
-            convert_shift_jis_to_utf8(data)
-        }
-        TextEncoding::EucKr => {
-            convert_euc_kr_to_utf8(data)
-        }
-        TextEncoding::Utf16Le => {
-            convert_utf16le_to_utf8(data)
-        }
-        TextEncoding::Utf16Be => {
-            convert_utf16be_to_utf8(data)
-        }
+        TextEncoding::Utf8 => str::from_utf8(data)
+            .map_err(|e| DictError::Internal(format!("Invalid UTF-8: {}", e)))
+            .map(|s| s.to_string()),
+        TextEncoding::Windows1252 => convert_windows1252_to_utf8(data),
+        TextEncoding::Iso88591 => convert_iso88591_to_utf8(data),
+        TextEncoding::Gb2312 => convert_gb2312_to_utf8(data),
+        TextEncoding::Big5 => convert_big5_to_utf8(data),
+        TextEncoding::ShiftJis => convert_shift_jis_to_utf8(data),
+        TextEncoding::EucKr => convert_euc_kr_to_utf8(data),
+        TextEncoding::Utf16Le => convert_utf16le_to_utf8(data),
+        TextEncoding::Utf16Be => convert_utf16be_to_utf8(data),
         TextEncoding::Unknown => {
             // Try to interpret as UTF-8, fallback to Windows-1252
             if is_valid_utf8(data) {
@@ -417,7 +409,7 @@ pub fn convert_to_utf8(data: &[u8], from_encoding: TextEncoding) -> Result<Strin
 /// Convert Windows-1252 to UTF-8
 fn convert_windows1252_to_utf8(data: &[u8]) -> Result<String> {
     let mut result = String::with_capacity(data.len() * 2);
-    
+
     for &byte in data {
         if byte < 0x80 {
             result.push(byte as char);
@@ -429,14 +421,14 @@ fn convert_windows1252_to_utf8(data: &[u8]) -> Result<String> {
             result.push(char::from(byte));
         }
     }
-    
+
     Ok(result)
 }
 
 /// Convert ISO-8859-1 to UTF-8
 fn convert_iso88591_to_utf8(data: &[u8]) -> Result<String> {
     let mut result = String::with_capacity(data.len() * 2);
-    
+
     for &byte in data {
         if byte < 0x80 {
             result.push(byte as char);
@@ -445,23 +437,25 @@ fn convert_iso88591_to_utf8(data: &[u8]) -> Result<String> {
             result.push(char::from(byte));
         }
     }
-    
+
     Ok(result)
 }
 
 /// Convert UTF-16LE to UTF-8
 fn convert_utf16le_to_utf8(data: &[u8]) -> Result<String> {
     if data.len() % 2 != 0 {
-        return Err(DictError::Internal("Invalid UTF-16LE data length".to_string()));
+        return Err(DictError::Internal(
+            "Invalid UTF-16LE data length".to_string(),
+        ));
     }
-    
+
     let mut result = String::with_capacity(data.len());
     let mut i = 0;
-    
+
     while i < data.len() {
         let code_unit = (data[i + 1] as u32) << 8 | data[i] as u32;
         i += 2;
-        
+
         if code_unit < 0x80 {
             result.push(char::from(code_unit as u8));
         } else if code_unit < 0x800 {
@@ -482,44 +476,50 @@ fn convert_utf16le_to_utf8(data: &[u8]) -> Result<String> {
                 let code_unit2 = (data[i + 1] as u32) << 8 | data[i] as u32;
                 if code_unit2 >= 0xDC00 && code_unit2 < 0xE000 {
                     let combined = 0x10000 + ((code_unit & 0x3FF) << 10) + (code_unit2 & 0x3FF);
-                    
+
                     let byte1 = 0xF0 | (combined >> 18) as u8;
                     let byte2 = 0x80 | ((combined >> 12) & 0x3F) as u8;
                     let byte3 = 0x80 | ((combined >> 6) & 0x3F) as u8;
                     let byte4 = 0x80 | (combined & 0x3F) as u8;
-                    
+
                     result.push(byte1 as char);
                     result.push(byte2 as char);
                     result.push(byte3 as char);
                     result.push(byte4 as char);
                     i += 2;
                 } else {
-                    return Err(DictError::Internal("Invalid UTF-16 surrogate pair".to_string()));
+                    return Err(DictError::Internal(
+                        "Invalid UTF-16 surrogate pair".to_string(),
+                    ));
                 }
             } else {
-                return Err(DictError::Internal("Incomplete UTF-16 surrogate pair".to_string()));
+                return Err(DictError::Internal(
+                    "Incomplete UTF-16 surrogate pair".to_string(),
+                ));
             }
         } else {
             return Err(DictError::Internal("Invalid UTF-16 code unit".to_string()));
         }
     }
-    
+
     Ok(result)
 }
 
 /// Convert UTF-16BE to UTF-8
 fn convert_utf16be_to_utf8(data: &[u8]) -> Result<String> {
     if data.len() % 2 != 0 {
-        return Err(DictError::Internal("Invalid UTF-16BE data length".to_string()));
+        return Err(DictError::Internal(
+            "Invalid UTF-16BE data length".to_string(),
+        ));
     }
-    
+
     let mut result = String::with_capacity(data.len());
     let mut i = 0;
-    
+
     while i < data.len() {
         let code_unit = (data[i] as u32) << 8 | data[i + 1] as u32;
         i += 2;
-        
+
         if code_unit < 0x80 {
             result.push(char::from(code_unit as u8));
         } else if code_unit < 0x800 {
@@ -540,62 +540,88 @@ fn convert_utf16be_to_utf8(data: &[u8]) -> Result<String> {
                 let code_unit2 = (data[i] as u32) << 8 | data[i + 1] as u32;
                 if code_unit2 >= 0xDC00 && code_unit2 < 0xE000 {
                     let combined = 0x10000 + ((code_unit & 0x3FF) << 10) + (code_unit2 & 0x3FF);
-                    
+
                     let byte1 = 0xF0 | (combined >> 18) as u8;
                     let byte2 = 0x80 | ((combined >> 12) & 0x3F) as u8;
                     let byte3 = 0x80 | ((combined >> 6) & 0x3F) as u8;
                     let byte4 = 0x80 | (combined & 0x3F) as u8;
-                    
+
                     result.push(byte1 as char);
                     result.push(byte2 as char);
                     result.push(byte3 as char);
                     result.push(byte4 as char);
                     i += 2;
                 } else {
-                    return Err(DictError::Internal("Invalid UTF-16 surrogate pair".to_string()));
+                    return Err(DictError::Internal(
+                        "Invalid UTF-16 surrogate pair".to_string(),
+                    ));
                 }
             } else {
-                return Err(DictError::Internal("Incomplete UTF-16 surrogate pair".to_string()));
+                return Err(DictError::Internal(
+                    "Incomplete UTF-16 surrogate pair".to_string(),
+                ));
             }
         } else {
             return Err(DictError::Internal("Invalid UTF-16 code unit".to_string()));
         }
     }
-    
+
     Ok(result)
 }
 
 /// Simplified GB2312 to UTF-8 conversion (placeholder implementation)
 fn convert_gb2312_to_utf8(_data: &[u8]) -> Result<String> {
-    // This is a simplified implementation
-    // In a real implementation, you would need a proper GB2312 to Unicode mapping
-    Err(DictError::Internal("GB2312 to UTF-8 conversion not implemented".to_string()))
+    let (cow, _, had_errors) = encoding_rs::GBK.decode(_data);
+    if had_errors {
+        Err(DictError::Internal(
+            "GB2312/GBK conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
+    }
 }
 
 /// Simplified Big5 to UTF-8 conversion (placeholder implementation)
 fn convert_big5_to_utf8(_data: &[u8]) -> Result<String> {
-    // This is a simplified implementation
-    // In a real implementation, you would need a proper Big5 to Unicode mapping
-    Err(DictError::Internal("Big5 to UTF-8 conversion not implemented".to_string()))
+    let (cow, _, had_errors) = encoding_rs::BIG5.decode(_data);
+    if had_errors {
+        Err(DictError::Internal(
+            "Big5 conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
+    }
 }
 
 /// Simplified Shift-JIS to UTF-8 conversion (placeholder implementation)
 fn convert_shift_jis_to_utf8(_data: &[u8]) -> Result<String> {
-    // This is a simplified implementation
-    // In a real implementation, you would need a proper Shift-JIS to Unicode mapping
-    Err(DictError::Internal("Shift-JIS to UTF-8 conversion not implemented".to_string()))
+    let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.decode(_data);
+    if had_errors {
+        Err(DictError::Internal(
+            "Shift-JIS conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
+    }
 }
 
 /// Simplified EUC-KR to UTF-8 conversion (placeholder implementation)
 fn convert_euc_kr_to_utf8(_data: &[u8]) -> Result<String> {
-    // This is a simplified implementation
-    // In a real implementation, you would need a proper EUC-KR to Unicode mapping
-    Err(DictError::Internal("EUC-KR to UTF-8 conversion not implemented".to_string()))
+    let (cow, _, had_errors) = encoding_rs::EUC_KR.decode(_data);
+    if had_errors {
+        Err(DictError::Internal(
+            "EUC-KR conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
+    }
 }
 
 /// Validate if a string is valid UTF-8
 pub fn is_valid_utf8_str(s: &str) -> bool {
-    s.bytes().all(|byte| byte < 0x80 || (byte & 0xE0) == 0xC0 || (byte & 0xF0) == 0xE0 || (byte & 0xF8) == 0xF0)
+    s.bytes().all(|byte| {
+        byte < 0x80 || (byte & 0xE0) == 0xC0 || (byte & 0xF0) == 0xE0 || (byte & 0xF8) == 0xF0
+    })
 }
 
 /// Get encoding statistics

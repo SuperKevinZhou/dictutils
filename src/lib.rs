@@ -86,17 +86,17 @@ pub mod index;
 pub mod util;
 
 // Re-export common types and functions for convenience
-pub use dict::{BatchOperations, DictLoader, ZimDict, MDict, StarDict};
+pub use dict::{BatchOperations, DictLoader, MDict, StarDict, ZimDict};
 pub use index::{btree, fts};
 pub use traits::*;
-pub use util::{compression, encoding, file_utils, buffer};
+pub use util::{buffer, compression, encoding, file_utils};
 
 // Convenience module for easy imports
 pub mod prelude {
-    pub use crate::traits::*;
-    pub use crate::dict::{DictLoader, BatchOperations, utils as dict_utils};
-    pub use crate::util::{compression::CompressionAlgorithm, encoding::TextEncoding, DictConfig};
+    pub use crate::dict::{utils as dict_utils, BatchOperations, DictLoader};
     pub use crate::index::{btree::BTreeIndex, fts::FtsIndex};
+    pub use crate::traits::*;
+    pub use crate::util::{compression::CompressionAlgorithm, encoding::TextEncoding, DictConfig};
 }
 
 /// Library version
@@ -129,20 +129,20 @@ pub mod cli {
     use crate::dict::{BatchOperations, DictLoader};
     use crate::traits::*;
     use std::path::PathBuf;
-    
+
     /// Command-line interface utilities
     pub fn print_dict_info<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
         let path = path.as_ref();
         let loader = DictLoader::new();
-        
+
         println!("Dictionary Information");
         println!("===================");
         println!("Path: {}", path.display());
-        
+
         if let Ok(format) = loader.detect_format(path) {
             println!("Format: {}", format);
         }
-        
+
         if let Ok(mut dict) = loader.load(path) {
             let metadata = dict.metadata();
             println!("Name: {}", metadata.name);
@@ -151,34 +151,34 @@ pub mod cli {
             println!("Size: {} bytes", metadata.file_size);
             println!("Has B-TREE: {}", metadata.has_btree);
             println!("Has FTS: {}", metadata.has_fts);
-            
+
             // Print statistics
             let stats = dict.stats();
             println!("Memory Usage: {} bytes", stats.memory_usage);
-            
+
             // Print index sizes
             for (index, size) in &stats.index_sizes {
                 println!("{} Index: {} bytes", index, size);
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Search command-line utility
     pub fn search_dict<P: AsRef<std::path::Path>>(
         path: P,
         query: &str,
         search_type: &str,
-        limit: Option<usize>
+        limit: Option<usize>,
     ) -> Result<()> {
         let path = path.as_ref();
         let loader = DictLoader::new();
         let mut dict = loader.load(path)?;
-        
+
         println!("Search Results for '{}'", query);
         println!("===========================");
-        
+
         let results = match search_type {
             "prefix" => dict.search_prefix(query, limit),
             "fuzzy" => dict.search_fuzzy(query, None),
@@ -187,58 +187,68 @@ pub mod cli {
                 let results_vec: Result<Vec<_>> = iterator.collect();
                 results_vec
             }
-            _ => return Err(DictError::UnsupportedOperation(
-                "Search type must be 'prefix', 'fuzzy', or 'fulltext'".to_string()
-            )),
+            _ => {
+                return Err(DictError::UnsupportedOperation(
+                    "Search type must be 'prefix', 'fuzzy', or 'fulltext'".to_string(),
+                ))
+            }
         }?;
-        
+
         for result in results.iter().take(limit.unwrap_or(10)) {
             println!("- {}", result.word);
             if let Some(score) = result.score {
                 println!("  Score: {:.3}", score);
             }
         }
-        
+
         println!("\nFound {} results", results.len());
         Ok(())
     }
-    
+
     /// Validate dictionary file
     pub fn validate_dict<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
         let path = path.as_ref();
         let loader = DictLoader::new();
-        
+
         println!("Validating dictionary: {}", path.display());
-        
+
         // Check if file exists and is readable
         if !path.exists() {
             return Err(DictError::FileNotFound(path.display().to_string()));
         }
-        
+
         // Try to detect format
         let format = loader.detect_format(path)?;
         println!("Format detected: {}", format);
-        
+
         // Try to load and validate
         let mut dict = loader.load(path)?;
-        
+
         // Validate integrity
         let stats = dict.stats();
         println!("Validation Results:");
         println!("  - Total entries: {}", stats.total_entries);
         println!("  - Memory usage: {} bytes", stats.memory_usage);
         println!("  - Cache hit rate: {:.2}%", stats.cache_hit_rate * 100.0);
-        
+
         println!(
             "  - B-TREE index: {}",
-            if dict.metadata().has_btree { "Available" } else { "Not available" }
+            if dict.metadata().has_btree {
+                "Available"
+            } else {
+                "Not available"
+            }
         );
-        
+
         println!(
             "  - FTS index: {}",
-            if dict.metadata().has_fts { "Available" } else { "Not available" }
+            if dict.metadata().has_fts {
+                "Available"
+            } else {
+                "Not available"
+            }
         );
-        
+
         println!("Dictionary validation: SUCCESS");
         Ok(())
     }
@@ -247,7 +257,7 @@ pub mod cli {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_utils::{generate_test_entries, temp_dir, cleanup_temp_dir};
+    use crate::util::test_utils::{cleanup_temp_dir, generate_test_entries, temp_dir};
 
     #[test]
     fn test_version_info() {
@@ -269,9 +279,9 @@ mod tests {
     #[test]
     fn test_compression_algorithms() {
         use crate::util::compression::*;
-        
+
         let test_data = b"Hello, World! This is test data for compression.";
-        
+
         for algorithm in &[CompressionAlgorithm::None, CompressionAlgorithm::Gzip] {
             let compressed = compress(test_data, algorithm.clone()).unwrap();
             let decompressed = decompress(&compressed, algorithm.clone()).unwrap();
@@ -282,12 +292,12 @@ mod tests {
     #[test]
     fn test_encoding_detection() {
         use crate::util::encoding::*;
-        
+
         // Test UTF-8 detection
         let utf8_data = "Hello, World! 🌟".as_bytes();
         let encoding = detect_encoding(utf8_data).unwrap();
         assert_eq!(encoding, TextEncoding::Utf8);
-        
+
         // Test ASCII detection
         let ascii_data = b"Hello, World!";
         let encoding = detect_encoding(ascii_data).unwrap();
@@ -298,7 +308,7 @@ mod tests {
     fn test_test_utils() {
         let entries = generate_test_entries(10);
         assert_eq!(entries.len(), 10);
-        
+
         // Check entry format
         for (i, (key, content)) in entries.iter().enumerate() {
             assert!(key.starts_with("word_"));
@@ -311,7 +321,7 @@ mod tests {
     fn test_dict_loader() {
         let loader = DictLoader::new();
         let formats = loader.supported_formats();
-        
+
         assert!(formats.contains(&"mdict".to_string()));
         assert!(formats.contains(&"stardict".to_string()));
         assert!(formats.contains(&"zim".to_string()));
@@ -320,15 +330,15 @@ mod tests {
     #[test]
     fn test_performance_utils() {
         use crate::util::performance::*;
-        
+
         let mut profiler = Profiler::new();
-        
+
         // Simulate some operations
         for i in 0..1000 {
             profiler.record("test_operation", 1);
             black_box(i);
         }
-        
+
         let ops_per_sec = profiler.operations_per_second("test_operation");
         assert!(ops_per_sec > 0.0);
     }
@@ -347,14 +357,14 @@ mod tests {
 #[cfg(all(test, feature = "bench"))]
 mod benchmarks {
     use super::*;
-    use crate::util::test_utils::{generate_test_entries, temp_dir, cleanup_temp_dir};
+    use crate::util::test_utils::{cleanup_temp_dir, generate_test_entries, temp_dir};
     use std::time::Instant;
 
     #[bench]
     fn bench_binary_search(b: &mut test::Bencher) {
         let entries = generate_test_entries(1000);
         let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
-        
+
         b.iter(|| {
             test::black_box(keys.binary_search(&"word_00500".to_string()));
         });
@@ -364,16 +374,16 @@ mod benchmarks {
     fn bench_prefix_search(b: &mut test::Bencher) {
         let config = DictConfig::default();
         let temp_path = temp_dir().unwrap();
-        
+
         // Create a temporary dictionary for testing
         let entries = generate_test_entries(1000);
-        
+
         b.iter(|| {
             // This would test actual prefix search performance
             // with a real dictionary implementation
             test::black_box(&entries);
         });
-        
+
         let _ = cleanup_temp_dir(&temp_path);
     }
 
@@ -381,7 +391,7 @@ mod benchmarks {
     fn bench_fuzzy_search(b: &mut test::Bencher) {
         let entries = generate_test_entries(1000);
         let query = "word_500";
-        
+
         b.iter(|| {
             let mut results = Vec::new();
             for (key, _) in &entries {
@@ -402,7 +412,7 @@ mod benchmarks {
         if (m as i32 - n as i32).abs() > max_dist as i32 {
             return None;
         }
-        
+
         let mut dp = vec![vec![0u32; n + 1]; m + 1];
         for i in 0..=m {
             dp[i][0] = i as u32;
@@ -410,17 +420,17 @@ mod benchmarks {
         for j in 0..=n {
             dp[0][j] = j as u32;
         }
-        
+
         for i in 1..=m {
             for j in 1..=n {
-                if a.chars().nth(i-1) == b.chars().nth(j-1) {
-                    dp[i][j] = dp[i-1][j-1];
+                if a.chars().nth(i - 1) == b.chars().nth(j - 1) {
+                    dp[i][j] = dp[i - 1][j - 1];
                 } else {
-                    dp[i][j] = 1 + dp[i-1][j].min(dp[i][j-1]).min(dp[i-1][j-1]);
+                    dp[i][j] = 1 + dp[i - 1][j].min(dp[i][j - 1]).min(dp[i - 1][j - 1]);
                 }
             }
         }
-        
+
         let distance = dp[m][n] as usize;
         if distance <= max_dist {
             Some(distance)

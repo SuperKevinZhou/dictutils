@@ -46,6 +46,12 @@ Optional dependencies for enhanced features:
 dictutils = { version = "0.1.0", features = ["criterion", "rayon", "cli"] }
 ```
 
+
+## ⚠️ Experimental Disclaimer
+
+Most examples currently operate on generated mock dictionary files. These files do not conform to real dictionary formats and are intended solely for demonstrating API usage. Relying on the generated files for production is unsafe; please use actual dictionary fixtures or user-supplied files and consider the crate experimental until full format parsing is implemented.
+
+
 ## Quick Start
 
 Most examples follow this basic pattern:

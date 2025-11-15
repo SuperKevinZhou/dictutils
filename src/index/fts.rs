@@ -14,8 +14,8 @@ use memmap2::{Mmap, MmapOptions};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::index::{FtsConfig, Index, IndexConfig, IndexStats};
 use crate::traits::{DictError, Result};
-use crate::index::{Index, IndexConfig, IndexStats, FtsConfig};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Document ID for FTS operations
@@ -136,7 +136,7 @@ impl FtsIndex {
     /// Create FTS index with custom configuration
     pub fn with_config(config: FtsConfig) -> Self {
         let stop_words = HashSet::from_iter(config.stop_words.clone());
-        
+
         Self {
             inverted_index: HashMap::new(),
             documents: HashMap::new(),
@@ -159,8 +159,7 @@ impl FtsIndex {
     /// Tokenize text into terms
     fn tokenize(&self, text: &str) -> Vec<(String, u32)> {
         // Create regex for word extraction
-        let word_pattern = Regex::new(r"\p{L}+|\p{N}+")
-            .expect("Failed to create word regex");
+        let word_pattern = Regex::new(r"\p{L}+|\p{N}+").expect("Failed to create word regex");
 
         let mut tokens = Vec::new();
         let mut positions = Vec::new();
@@ -168,14 +167,15 @@ impl FtsIndex {
 
         for mat in word_pattern.find_iter(text) {
             let token = mat.as_str().to_lowercase();
-            
+
             // Skip stop words
             if self.stop_words.contains(&token) {
                 continue;
             }
 
             // Filter by length
-            if token.len() >= self.config.min_token_len && token.len() <= self.config.max_token_len {
+            if token.len() >= self.config.min_token_len && token.len() <= self.config.max_token_len
+            {
                 tokens.push(token);
                 positions.push(position);
                 position += 1;
@@ -188,7 +188,7 @@ impl FtsIndex {
     /// Add a document to the index
     fn add_document(&mut self, key: String, content: &[u8]) -> Result<DocId> {
         let _guard = self.lock.write();
-        
+
         let content_str = String::from_utf8_lossy(content);
         let doc_id = self.next_doc_id;
         self.next_doc_id += 1;
@@ -220,20 +220,17 @@ impl FtsIndex {
                 .collect();
 
             // Assign a stable term_id per term. If the term already exists, reuse its id.
-            let entry = self
-                .inverted_index
-                .entry(term.clone())
-                .or_insert_with(|| {
-                    let term_id = self.next_term_id;
-                    self.next_term_id = self.next_term_id.saturating_add(1);
-                    InvertedIndexEntry {
-                        term_id,
-                        term: term.clone(),
-                        postings: Vec::new(),
-                        doc_freq: 0,
-                        term_freq: 0,
-                    }
-                });
+            let entry = self.inverted_index.entry(term.clone()).or_insert_with(|| {
+                let term_id = self.next_term_id;
+                self.next_term_id = self.next_term_id.saturating_add(1);
+                InvertedIndexEntry {
+                    term_id,
+                    term: term.clone(),
+                    postings: Vec::new(),
+                    doc_freq: 0,
+                    term_freq: 0,
+                }
+            });
 
             entry.postings.push(Posting {
                 doc_id,
@@ -250,7 +247,7 @@ impl FtsIndex {
     /// Search for documents containing the query
     pub fn search(&self, query: &str) -> Result<Vec<(String, f32)>> {
         let _guard = self.lock.read();
-        
+
         let query_tokens = self.tokenize(query);
         if query_tokens.is_empty() {
             return Ok(Vec::new());
@@ -269,7 +266,7 @@ impl FtsIndex {
 
         // Score documents
         let mut doc_scores = HashMap::<DocId, f32>::new();
-        
+
         for (term, idf) in query_term_weights {
             if let Some(entry) = self.inverted_index.get(term.as_str()) {
                 for posting in &entry.postings {
@@ -281,9 +278,11 @@ impl FtsIndex {
         }
 
         // Sort results by score
-        let mut results: Vec<_> = doc_scores.into_iter()
+        let mut results: Vec<_> = doc_scores
+            .into_iter()
             .filter_map(|(doc_id, score)| {
-                self.documents.get(&doc_id)
+                self.documents
+                    .get(&doc_id)
                     .map(|doc| (doc.key.clone(), score))
             })
             .collect();
@@ -296,7 +295,7 @@ impl FtsIndex {
     /// Get terms starting with prefix
     pub fn prefix_search(&self, prefix: &str) -> Result<Vec<String>> {
         let _guard = self.lock.read();
-        
+
         let mut terms = Vec::new();
         for term in self.inverted_index.keys() {
             if term.starts_with(prefix) {
@@ -304,18 +303,24 @@ impl FtsIndex {
             }
         }
         terms.sort();
-        
+
         Ok(terms)
     }
 
     /// Get term frequency
     pub fn term_frequency(&self, term: &str) -> u32 {
-        self.inverted_index.get(term).map(|e| e.term_freq).unwrap_or(0)
+        self.inverted_index
+            .get(term)
+            .map(|e| e.term_freq)
+            .unwrap_or(0)
     }
 
     /// Get document frequency
     pub fn document_frequency(&self, term: &str) -> u32 {
-        self.inverted_index.get(term).map(|e| e.doc_freq).unwrap_or(0)
+        self.inverted_index
+            .get(term)
+            .map(|e| e.doc_freq)
+            .unwrap_or(0)
     }
 
     /// Get vocabulary size
@@ -335,19 +340,23 @@ impl FtsIndex {
     /// Get suggestions for misspelled query
     pub fn suggest_spelling(&self, query: &str) -> Result<Vec<String>> {
         let _guard = self.lock.read();
-        
+
         // Simple edit distance suggestion
         let mut suggestions = Vec::new();
-        
+
         for term in self.inverted_index.keys() {
             let distance = self.edit_distance(query, term);
             if distance <= 2 {
                 suggestions.push((term.clone(), distance));
             }
         }
-        
+
         suggestions.sort_by(|a, b| a.1.cmp(&b.1));
-        Ok(suggestions.into_iter().take(10).map(|(term, _)| term).collect())
+        Ok(suggestions
+            .into_iter()
+            .take(10)
+            .map(|(term, _)| term)
+            .collect())
     }
 
     /// Calculate edit distance between two strings
@@ -364,10 +373,10 @@ impl FtsIndex {
 
         for i in 1..=m {
             for j in 1..=n {
-                if s1.chars().nth(i-1) == s2.chars().nth(j-1) {
-                    dp[i][j] = dp[i-1][j-1];
+                if s1.chars().nth(i - 1) == s2.chars().nth(j - 1) {
+                    dp[i][j] = dp[i - 1][j - 1];
                 } else {
-                    dp[i][j] = 1 + dp[i-1][j].min(dp[i][j-1]).min(dp[i-1][j-1]);
+                    dp[i][j] = 1 + dp[i - 1][j].min(dp[i][j - 1]).min(dp[i - 1][j - 1]);
                 }
             }
         }
@@ -378,7 +387,7 @@ impl FtsIndex {
     /// Get highlighted snippet for a document
     pub fn get_snippet(&self, doc_id: DocId, query: &str, max_length: usize) -> Option<String> {
         let _guard = self.lock.read();
-        
+
         let doc = self.documents.get(&doc_id)?;
         let content = String::from_utf8_lossy(&doc.content);
         let query_tokens: Vec<_> = self.tokenize(query).into_iter().map(|(t, _)| t).collect();
@@ -406,13 +415,13 @@ impl FtsIndex {
     /// Validate index integrity
     pub fn validate(&self) -> Result<bool> {
         let _guard = self.lock.read();
-        
+
         // Check consistency between forward and inverted indexes
         for (doc_id, doc) in &self.documents {
             // Check that document exists in inverted index
             let content = String::from_utf8_lossy(&doc.content);
             let tokens = self.tokenize(&content);
-            
+
             for (term, _) in tokens {
                 if let Some(entry) = self.inverted_index.get(&term) {
                     let has_doc = entry.postings.iter().any(|p| p.doc_id == *doc_id);
@@ -495,9 +504,8 @@ impl Index for FtsIndex {
     }
 
     fn load(&mut self, path: &Path) -> Result<()> {
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-        
+        let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
+
         let mmap = unsafe {
             MmapOptions::new()
                 .map(&file)
@@ -509,7 +517,7 @@ impl Index for FtsIndex {
         let (inverted_index, documents, term_stats): (
             HashMap<String, InvertedIndexEntry>,
             HashMap<DocId, Document>,
-            HashMap<String, u32>
+            HashMap<String, u32>,
         ) = bincode::deserialize(serialized_data)
             .map_err(|e| DictError::SerializationError(e.to_string()))?;
 
@@ -522,18 +530,13 @@ impl Index for FtsIndex {
     }
 
     fn save(&self, path: &Path) -> Result<()> {
-        let file = File::create(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        let file = File::create(path).map_err(|e| DictError::IoError(e.to_string()))?;
 
         // Serialize the FTS index
-        let data = (
-            &self.inverted_index,
-            &self.documents,
-            &self.term_stats,
-        );
-        
-        let serialized = bincode::serialize(&data)
-            .map_err(|e| DictError::SerializationError(e.to_string()))?;
+        let data = (&self.inverted_index, &self.documents, &self.term_stats);
+
+        let serialized =
+            bincode::serialize(&data).map_err(|e| DictError::SerializationError(e.to_string()))?;
 
         let mut file = file;
         file.write_all(&serialized)

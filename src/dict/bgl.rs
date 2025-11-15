@@ -180,9 +180,7 @@ impl BglDict {
             header,
             btree_index,
             fts_index,
-            cache: Arc::new(RwLock::new(lru_cache::LruCache::new(
-                config.cache_size,
-            ))),
+            cache: Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size))),
             config,
             metadata,
         })
@@ -249,9 +247,7 @@ impl BglDict {
             .header
             .chunks_offset
             .checked_add(offset)
-            .ok_or_else(|| {
-                DictError::InvalidFormat("BGL article offset overflow".to_string())
-            })?;
+            .ok_or_else(|| DictError::InvalidFormat("BGL article offset overflow".to_string()))?;
 
         let mut f = File::open(&self.index_path)
             .map_err(|e| DictError::IoError(format!("open BGL index for article: {e}")))?;
@@ -270,11 +266,9 @@ impl BglDict {
         let head = parts
             .next()
             .ok_or_else(|| DictError::InvalidFormat("Missing BGL headword".to_string()))?;
-        let disp = parts
-            .next()
-            .ok_or_else(|| {
-                DictError::InvalidFormat("Missing BGL displayed headword".to_string())
-            })?;
+        let disp = parts.next().ok_or_else(|| {
+            DictError::InvalidFormat("Missing BGL displayed headword".to_string())
+        })?;
         let rest = parts.next().unwrap_or(&[]);
 
         let headword = String::from_utf8_lossy(head).to_string();
@@ -387,10 +381,7 @@ impl Dict<String> for BglDict {
         }
     }
 
-    fn get_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
+    fn get_range(&self, range: std::ops::Range<usize>) -> Result<Vec<(String, Vec<u8>)>> {
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -442,10 +433,7 @@ impl Dict<String> for BglDict {
         prefix: &str,
     ) -> Result<Box<dyn Iterator<Item = Result<(String, Vec<u8>)>> + Send>> {
         let hits = self.search_prefix(prefix, Some(256))?;
-        let mapped: Vec<_> = hits
-            .into_iter()
-            .map(|sr| Ok((sr.word, sr.entry)))
-            .collect();
+        let mapped: Vec<_> = hits.into_iter().map(|sr| Ok((sr.word, sr.entry))).collect();
         Ok(Box::new(mapped.into_iter()))
     }
 
@@ -535,10 +523,7 @@ impl HighPerformanceDict<String> for BglDict {
         self.get(key)
     }
 
-    fn stream_search(
-        &self,
-        query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
+    fn stream_search(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
         // Erase Send bound by using the same underlying iterator; this matches trait signature.
         let it = self.search_fulltext(query)?;
         Ok(Box::new(it))
@@ -565,10 +550,7 @@ impl DictFormat<String> for BglDict {
         Ok(false)
     }
 
-    fn load(
-        path: &Path,
-        config: DictConfig,
-    ) -> Result<Box<dyn Dict<String> + Send + Sync>> {
+    fn load(path: &Path, config: DictConfig) -> Result<Box<dyn Dict<String> + Send + Sync>> {
         let dict = BglDict::new(path, config)?;
         Ok(Box::new(dict))
     }

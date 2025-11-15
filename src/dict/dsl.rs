@@ -68,11 +68,7 @@ impl DslEncoding {
                 return Some(DslEncoding::Utf16Be);
             }
         }
-        if prefix.len() >= 3
-            && prefix[0] == 0xEF
-            && prefix[1] == 0xBB
-            && prefix[2] == 0xBF
-        {
+        if prefix.len() >= 3 && prefix[0] == 0xEF && prefix[1] == 0xBB && prefix[2] == 0xBF {
             return Some(DslEncoding::Utf8);
         }
 
@@ -151,8 +147,7 @@ impl DslDict {
             has_fts: fts_index.is_some(),
         };
 
-        let entry_cache =
-            Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
+        let entry_cache = Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
 
         Ok(Self {
             dsl_path,
@@ -167,12 +162,11 @@ impl DslDict {
 
     /// Read raw bytes from .dsl or .dsl.dz.
     fn read_raw_file(path: &Path) -> Result<(Vec<u8>, bool)> {
-        let mut f = File::open(path)
-            .map_err(|e| DictError::IoError(format!("open dsl: {e}")))?;
+        let mut f = File::open(path).map_err(|e| DictError::IoError(format!("open dsl: {e}")))?;
         let mut prefix = [0u8; 2];
-        let n = f.read(&mut prefix).map_err(|e| {
-            DictError::IoError(format!("read dsl prefix: {e}"))
-        })?;
+        let n = f
+            .read(&mut prefix)
+            .map_err(|e| DictError::IoError(format!("read dsl prefix: {e}")))?;
         f.seek(SeekFrom::Start(0))
             .map_err(|e| DictError::IoError(format!("seek dsl: {e}")))?;
 
@@ -181,26 +175,18 @@ impl DslDict {
         if is_gzip {
             let mut gz = GzDecoder::new(f);
             gz.read_to_end(&mut buf)
-                .map_err(|e| DictError::DecompressionError(format!(
-                    "gunzip dsl.dz: {e}"
-                )))?;
+                .map_err(|e| DictError::DecompressionError(format!("gunzip dsl.dz: {e}")))?;
         } else {
-            f.read_to_end(&mut buf).map_err(|e| {
-                DictError::IoError(format!("read dsl: {e}"))
-            })?;
+            f.read_to_end(&mut buf)
+                .map_err(|e| DictError::IoError(format!("read dsl: {e}")))?;
         }
         Ok((buf, is_gzip))
     }
 
     /// Detect encoding and decode raw bytes into a UTF-8 string for further parsing.
-    fn decode_with_detection(
-        raw: &[u8],
-        _is_gzip: bool,
-    ) -> Result<(DslEncoding, String)> {
+    fn decode_with_detection(raw: &[u8], _is_gzip: bool) -> Result<(DslEncoding, String)> {
         if raw.is_empty() {
-            return Err(DictError::InvalidFormat(
-                "Empty DSL file".to_string(),
-            ));
+            return Err(DictError::InvalidFormat("Empty DSL file".to_string()));
         }
 
         // First, check BOMs.
@@ -222,9 +208,7 @@ impl DslDict {
                         .collect();
                     String::from_utf16_lossy(&u16s)
                 }
-                DslEncoding::Utf8 => {
-                    String::from_utf8_lossy(&raw[3..]).into_owned()
-                }
+                DslEncoding::Utf8 => String::from_utf8_lossy(&raw[3..]).into_owned(),
                 _ => {
                     return Err(DictError::InvalidFormat(
                         "Unsupported BOM in DSL".to_string(),
@@ -275,7 +259,12 @@ impl DslDict {
     fn parse_dsl(
         content: &str,
         _enc: DslEncoding,
-    ) -> Result<(Option<String>, Option<String>, Option<String>, HashMap<String, String>)> {
+    ) -> Result<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        HashMap<String, String>,
+    )> {
         let mut name: Option<String> = None;
         let mut lang_from: Option<String> = None;
         let mut lang_to: Option<String> = None;
@@ -295,13 +284,9 @@ impl DslDict {
             // Extract directives with quoted value: #NAME "..."
             if let Some(arg) = Self::extract_quoted(line, "#NAME") {
                 name = Some(arg);
-            } else if let Some(arg) =
-                Self::extract_quoted(line, "#INDEX_LANGUAGE")
-            {
+            } else if let Some(arg) = Self::extract_quoted(line, "#INDEX_LANGUAGE") {
                 lang_from = Some(arg);
-            } else if let Some(arg) =
-                Self::extract_quoted(line, "#CONTENTS_LANGUAGE")
-            {
+            } else if let Some(arg) = Self::extract_quoted(line, "#CONTENTS_LANGUAGE") {
                 lang_to = Some(arg);
             } else {
                 // Other directives like #SOURCE_CODE_PAGE, #SOUND_DICTIONARY, etc. are
@@ -410,10 +395,7 @@ impl DslDict {
         }
 
         // Non-prefixed candidate:
-        if s.starts_with('#')
-            || s.starts_with('[')
-            || s.starts_with('{')
-        {
+        if s.starts_with('#') || s.starts_with('[') || s.starts_with('{') {
             return None;
         }
 
@@ -598,11 +580,7 @@ impl Dict<String> for DslDict {
         Ok(results)
     }
 
-    fn search_fuzzy(
-        &self,
-        query: &str,
-        max_distance: Option<u32>,
-    ) -> Result<Vec<SearchResult>> {
+    fn search_fuzzy(&self, query: &str, max_distance: Option<u32>) -> Result<Vec<SearchResult>> {
         let max_distance = max_distance.unwrap_or(2);
         let mut results = Vec::new();
 
@@ -664,10 +642,7 @@ impl Dict<String> for DslDict {
         Ok(Box::new(out.into_iter()))
     }
 
-    fn get_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
+    fn get_range(&self, range: std::ops::Range<usize>) -> Result<Vec<(String, Vec<u8>)>> {
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -719,8 +694,7 @@ impl Dict<String> for DslDict {
     }
 
     fn reload_indexes(&mut self) -> Result<()> {
-        let (btree, fts) =
-            Self::load_sidecar_indexes(&self.dsl_path, &self.config)?;
+        let (btree, fts) = Self::load_sidecar_indexes(&self.dsl_path, &self.config)?;
         self.btree_index = btree;
         self.fts_index = fts;
         Ok(())
@@ -761,10 +735,7 @@ impl HighPerformanceDict<String> for DslDict {
         self.get(key)
     }
 
-    fn stream_search(
-        &self,
-        query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
+    fn stream_search(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
         // Use fulltext if available, else prefix scan.
         if let Ok(iter) = self.search_fulltext(query) {
             Ok(iter)
@@ -792,10 +763,8 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i + 1;
         for (j, cb) in b.chars().enumerate() {
             let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = std::cmp::min(
-                std::cmp::min(curr[j] + 1, prev[j + 1] + 1),
-                prev[j] + cost,
-            );
+            curr[j + 1] =
+                std::cmp::min(std::cmp::min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

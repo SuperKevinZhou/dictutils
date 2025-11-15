@@ -145,31 +145,25 @@ impl StarDict {
         }
 
         // 5) Open .dict/.dict.dz
-        let dict_file = File::open(&dict_path)
-            .map_err(|e| DictError::IoError(format!("open dict: {e}")))?;
+        let dict_file =
+            File::open(&dict_path).map_err(|e| DictError::IoError(format!("open dict: {e}")))?;
 
         // 6) Mmap if uncompressed and allowed
         let mmap = if config.use_mmap && !dict_is_dz {
-            Some(Arc::new(
-                unsafe {
-                    memmap2::MmapOptions::new()
-                        .map(&dict_file)
-                        .map_err(|e| DictError::MmapError(e.to_string()))?
-                },
-            ))
+            Some(Arc::new(unsafe {
+                memmap2::MmapOptions::new()
+                    .map(&dict_file)
+                    .map_err(|e| DictError::MmapError(e.to_string()))?
+            }))
         } else {
             None
         };
 
         // 7) Load optional sidecar indexes or build minimal in-memory ones
-        let (btree_index, fts_index) =
-            Self::load_sidecar_indexes(&ifo_path, &config)?;
+        let (btree_index, fts_index) = Self::load_sidecar_indexes(&ifo_path, &config)?;
 
         // 8) Build DictMetadata
-        let file_size = dict_file
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = dict_file.metadata().map(|m| m.len()).unwrap_or(0);
 
         let name = if !ifo.bookname.is_empty() {
             ifo.bookname.clone()
@@ -200,8 +194,7 @@ impl StarDict {
             ifo,
         };
 
-        let entry_cache =
-            Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
+        let entry_cache = Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
 
         Ok(Self {
             ifo_path,
@@ -222,8 +215,7 @@ impl StarDict {
 
     /// Parse .ifo file according to references/stardict.cc Ifo::Ifo.
     fn parse_ifo(path: &Path) -> Result<Ifo> {
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(format!("open ifo: {e}")))?;
+        let file = File::open(path).map_err(|e| DictError::IoError(format!("open ifo: {e}")))?;
         let mut reader = BufReader::new(file);
 
         let mut first = String::new();
@@ -280,12 +272,9 @@ impl StarDict {
             macro_rules! parse_u {
                 ($field:ident, $name:expr) => {
                     if let Some(v) = l.strip_prefix($name) {
-                        ifo.$field = v
-                            .parse()
-                            .map_err(|_| DictError::InvalidFormat(format!(
-                                "Bad field in .ifo: {}",
-                                $name
-                            )))?;
+                        ifo.$field = v.parse().map_err(|_| {
+                            DictError::InvalidFormat(format!("Bad field in .ifo: {}", $name))
+                        })?;
                         continue;
                     }
                 };
@@ -355,13 +344,8 @@ impl StarDict {
     }
 
     /// Given path/to/file.ifo, locate .idx(.gz/.dz), .dict(.dz), .syn like references/stardict.cc::findCorrespondingFiles.
-    fn find_companion_files(
-        ifo_path: &Path,
-    ) -> Result<(PathBuf, PathBuf, bool, Option<PathBuf>)> {
-        let stem = ifo_path
-            .with_extension("")
-            .to_string_lossy()
-            .to_string();
+    fn find_companion_files(ifo_path: &Path) -> Result<(PathBuf, PathBuf, bool, Option<PathBuf>)> {
+        let stem = ifo_path.with_extension("").to_string_lossy().to_string();
 
         // Try idx
         let mut idx_candidates = [
@@ -455,8 +439,8 @@ impl StarDict {
                 .map_err(|e| DictError::IoError(format!("read idx.gz: {e}")))?;
             Self::parse_idx_buffer(&buf, &mut map)?;
         } else {
-            let mut file = File::open(idx_path)
-                .map_err(|e| DictError::IoError(format!("open idx: {e}")))?;
+            let mut file =
+                File::open(idx_path).map_err(|e| DictError::IoError(format!("open idx: {e}")))?;
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)
                 .map_err(|e| DictError::IoError(format!("read idx: {e}")))?;
@@ -487,19 +471,9 @@ impl StarDict {
                 break; // malformed
             }
 
-            let offset = u32::from_be_bytes([
-                buf[i],
-                buf[i + 1],
-                buf[i + 2],
-                buf[i + 3],
-            ]) as u64;
+            let offset = u32::from_be_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]) as u64;
             i += 4;
-            let size = u32::from_be_bytes([
-                buf[i],
-                buf[i + 1],
-                buf[i + 2],
-                buf[i + 3],
-            ]) as u64;
+            let size = u32::from_be_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]) as u64;
             i += 4;
 
             out.insert(word, EntryLoc { offset, size });
@@ -520,8 +494,7 @@ impl StarDict {
         let base_entries: Vec<(String, EntryLoc)> =
             index.iter().map(|(k, v)| (k.clone(), *v)).collect();
 
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(format!("open syn: {e}")))?;
+        let file = File::open(path).map_err(|e| DictError::IoError(format!("open syn: {e}")))?;
 
         let ext = path
             .extension()
@@ -748,7 +721,8 @@ impl StarDict {
             // of compressed dictzip data (data_start).
             let data_start = header_reader
                 .seek(SeekFrom::Current(0))
-                .map_err(|e| DictError::IoError(format!("dict.dz tell: {e}")))? as u64;
+                .map_err(|e| DictError::IoError(format!("dict.dz tell: {e}")))?
+                as u64;
             file.seek(SeekFrom::Start(data_start))
                 .map_err(|e| DictError::IoError(format!("dict.dz seek data_start: {e}")))?;
 
@@ -765,10 +739,9 @@ impl StarDict {
                 //      chunk's compressed region.
                 //   3) Copy requested slice from concatenated chunk data.
                 let start = loc.offset;
-                let end = loc
-                    .offset
-                    .checked_add(loc.size)
-                    .ok_or_else(|| DictError::Internal("StarDict dict.dz offset overflow".into()))?;
+                let end = loc.offset.checked_add(loc.size).ok_or_else(|| {
+                    DictError::Internal("StarDict dict.dz offset overflow".into())
+                })?;
 
                 let first_chunk = (start / chunk_len as u64) as usize;
                 let last_chunk = ((end - 1) / chunk_len as u64) as usize;
@@ -790,9 +763,7 @@ impl StarDict {
                         // Last chunk: until EOF minus 8-byte gzip footer.
                         // We conservatively read till EOF; GzDecoder stops at stream end.
                         file.metadata()
-                            .map_err(|e| {
-                                DictError::IoError(format!("dict.dz metadata: {e}"))
-                            })?
+                            .map_err(|e| DictError::IoError(format!("dict.dz metadata: {e}")))?
                             .len()
                             .saturating_sub(8)
                     };
@@ -805,12 +776,9 @@ impl StarDict {
                     let comp_size = (comp_end - comp_off) as usize;
                     let mut comp_buf = vec![0u8; comp_size];
                     file.seek(SeekFrom::Start(comp_off))
-                        .map_err(|e| {
-                            DictError::IoError(format!("dict.dz seek chunk: {e}"))
-                        })?;
-                    file.read_exact(&mut comp_buf).map_err(|e| {
-                        DictError::IoError(format!("dict.dz read chunk: {e}"))
-                    })?;
+                        .map_err(|e| DictError::IoError(format!("dict.dz seek chunk: {e}")))?;
+                    file.read_exact(&mut comp_buf)
+                        .map_err(|e| DictError::IoError(format!("dict.dz read chunk: {e}")))?;
 
                     let mut gz = GzDecoder::new(&comp_buf[..]);
                     let mut decomp = Vec::with_capacity(chunk_len as usize);
@@ -841,12 +809,9 @@ impl StarDict {
                     if slice_end > slice_start && slice_start < decomp.len() {
                         let slice_end_clamped =
                             slice_end.min(decomp.len()).min(slice_start + remaining);
-                        out.extend_from_slice(
-                            &decomp[slice_start..slice_end_clamped],
-                        );
-                        remaining = remaining.saturating_sub(
-                            slice_end_clamped.saturating_sub(slice_start),
-                        );
+                        out.extend_from_slice(&decomp[slice_start..slice_end_clamped]);
+                        remaining =
+                            remaining.saturating_sub(slice_end_clamped.saturating_sub(slice_start));
                         if remaining == 0 {
                             break;
                         }
@@ -866,12 +831,29 @@ impl StarDict {
                 return Ok(out);
             }
 
-            // No RA table: fall back to sequential inflate and fail on random access.
-            // This matches behavior of tools which require proper dictzip layout.
-            Err(DictError::UnsupportedOperation(
-                "StarDict dict.dz without RA table is not supported for random access"
-                    .to_string(),
-            ))
+            // No RA table: fall back to sequential inflate and read required slice.
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| DictError::IoError(format!("dict.dz reset: {e}")))?;
+            let mut seq_decoder = GzDecoder::new(&self.dict_file);
+            let mut decompressed = Vec::new();
+            seq_decoder.read_to_end(&mut decompressed).map_err(|e| {
+                DictError::DecompressionError(format!("dict.dz sequential inflate failed: {e}"))
+            })?;
+
+            let start = loc.offset as usize;
+            let end_pos = start.checked_add(loc.size as usize).ok_or_else(|| {
+                DictError::Internal("StarDict dict.dz requested size overflow".to_string())
+            })?;
+
+            if end_pos > decompressed.len() {
+                return Err(DictError::InvalidFormat(format!(
+                    "StarDict dict.dz read beyond decompressed data: {} > {}",
+                    end_pos,
+                    decompressed.len()
+                )));
+            }
+
+            return Ok(decompressed[start..end_pos].to_vec());
         } else if let Some(ref mmap) = self.mmap {
             let end = loc
                 .offset
@@ -1020,10 +1002,7 @@ impl Dict<String> for StarDict {
         }
     }
 
-    fn get_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
+    fn get_range(&self, range: std::ops::Range<usize>) -> Result<Vec<(String, Vec<u8>)>> {
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -1083,8 +1062,7 @@ impl Dict<String> for StarDict {
     }
 
     fn reload_indexes(&mut self) -> Result<()> {
-        let (btree, fts) =
-            Self::load_sidecar_indexes(&self.ifo_path, &self.config)?;
+        let (btree, fts) = Self::load_sidecar_indexes(&self.ifo_path, &self.config)?;
         self.btree_index = btree;
         self.fts_index = fts;
         Ok(())
@@ -1114,8 +1092,7 @@ impl Dict<String> for StarDict {
         }
 
         let mut btree = BTreeIndex::new();
-        let mut entries_for_fts: Vec<(String, Vec<u8>)> =
-            Vec::with_capacity(self.index.len());
+        let mut entries_for_fts: Vec<(String, Vec<u8>)> = Vec::with_capacity(self.index.len());
         let idx_cfg = crate::index::IndexConfig::default();
 
         // Deterministic order by key for reproducible layout.
@@ -1127,11 +1104,13 @@ impl Dict<String> for StarDict {
             entries_for_fts.push((word.clone(), data));
         }
 
-        // For BTree we store logical offsets as u64 indices into entries_for_fts.
+        // Persist actual offsets for compatibility with on-disk layout.
         let btree_entries: Vec<(String, Vec<u8>)> = entries_for_fts
             .iter()
-            .enumerate()
-            .map(|(i, (k, _))| (k.clone(), (i as u64).to_le_bytes().to_vec()))
+            .map(|(key, _)| {
+                let loc = self.index.get(key).expect("key must exist in index");
+                (key.clone(), loc.offset.to_le_bytes().to_vec())
+            })
             .collect();
 
         btree.build(&btree_entries, &idx_cfg)?;
@@ -1161,10 +1140,7 @@ impl HighPerformanceDict<String> for StarDict {
         self.get(key)
     }
 
-    fn stream_search(
-        &self,
-        query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
+    fn stream_search(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
         // Use FTS if available; otherwise fall back to simple prefix scan.
         if let Ok(iter) = self.search_fulltext(query) {
             // search_fulltext already returns the correct iterator type; just forward it

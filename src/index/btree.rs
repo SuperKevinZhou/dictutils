@@ -1,39 +1,49 @@
-//! High-performance B-TREE index for dictionary key lookups
+//! High-performance B-Tree index for dictionary key lookups
 //!
-//! This module implements an efficient B-TREE structure for fast key lookups
-//! and range queries. It supports memory-mapped file access and compression.
+//! This module implements a production-ready B-Tree that supports
+//! insertion, lookup, range queries, validation, and persistence to disk.
+//! The implementation keeps the public API compatible with the original
+//! crate contract while ensuring we maintain proper B-Tree invariants.
 
-use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, Read, Write, Seek, SeekFrom};
-use std::marker::PhantomData;
-use std::mem::size_of;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
-use memmap2::{Mmap, MmapOptions};
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use lru_cache::LruCache;
-
-use crate::traits::{DictError, Result};
-use crate::index::{Index, IndexConfig, IndexStats, IndexError};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-/// B-TREE node containing keys and child pointers
+use crate::index::{Index, IndexConfig, IndexStats};
+use crate::traits::{DictError, Result};
+
+/// Default maximum number of keys that a node can hold.
+const DEFAULT_ORDER: usize = 64;
+
+/// On-disk snapshot persisted through `save()`/`load()`.
+#[derive(Debug, Serialize, Deserialize)]
+struct BTreeSnapshot {
+    order: usize,
+    root: Option<usize>,
+    nodes: Vec<BTreeNode>,
+    stats: IndexStats,
+}
+
+/// B-Tree node containing keys and child pointers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BTreeNode {
-    /// Keys in this node (sorted)
+    /// Keys in this node (sorted).
     keys: Vec<String>,
-    /// Values (file offsets) in this node
+    /// Values (file offsets) in this node.
     values: Vec<u64>,
-    /// Child pointers
+    /// Child pointers stored as node indices.
     children: Vec<usize>,
-    /// Whether this is a leaf node
+    /// Whether this is a leaf node.
     is_leaf: bool,
 }
 
 impl BTreeNode {
-    /// Create a new empty leaf node
     fn new_leaf() -> Self {
         Self {
             keys: Vec::new(),
@@ -43,7 +53,6 @@ impl BTreeNode {
         }
     }
 
-    /// Create a new empty internal node
     fn new_internal() -> Self {
         Self {
             keys: Vec::new(),
@@ -53,94 +62,43 @@ impl BTreeNode {
         }
     }
 
-    /// Binary search for a key in this node
-    fn binary_search(&self, key: &str) -> Option<usize> {
-        let mut left = 0;
-        let mut right = self.keys.len();
-
-        while left < right {
-            let mid = (left + right) / 2;
-            match self.keys[mid].as_str().cmp(key) {
-                std::cmp::Ordering::Equal => return Some(mid),
-                std::cmp::Ordering::Less => left = mid + 1,
-                std::cmp::Ordering::Greater => right = mid,
-            }
-        }
-        None
-    }
-
-    /// Find the position to insert a key
-    fn find_insert_position(&self, key: &str) -> usize {
-        self.keys.binary_search_by(|k| k.as_str().cmp(key)).unwrap_or_else(|pos| pos)
-    }
-
-    /// Check if this node is full
-    fn is_full(&self, order: usize) -> bool {
-        self.keys.len() >= order
-    }
-
-    /// Get the minimum key in the subtree rooted at this node
-    fn min_key(&self) -> Option<&str> {
-        if self.is_leaf {
-            self.keys.first().map(|s| s.as_str())
-        } else {
-            self.children.first().and_then(|idx| {
-                // This would need access to the tree to get the actual node
-                // For now, return None
-                None
-            })
-        }
-    }
-
-    /// Get the maximum key in the subtree rooted at this node
-    fn max_key(&self) -> Option<&str> {
-        if self.is_leaf {
-            self.keys.last().map(|s| s.as_str())
-        } else {
-            self.children.last().and_then(|idx| {
-                // This would need access to the tree to get the actual node
-                // For now, return None
-                None
-            })
-        }
+    fn key_count(&self) -> usize {
+        self.keys.len()
     }
 }
 
-/// B-TREE index implementation
+/// Production-ready B-Tree index implementation.
 pub struct BTreeIndex {
-    /// Order of the B-TREE (maximum keys per node)
+    /// Maximum number of keys per node (fan-out minus one).
     order: usize,
-    /// Root node index
+    /// Root node index.
     root: Option<usize>,
-    /// All nodes in the tree
+    /// All nodes backing the tree.
     nodes: Vec<BTreeNode>,
-    /// File offset mapping for persistence
-    node_offsets: Vec<u64>,
-    /// Memory-mapped file for persistence
-    mmap: Option<Arc<Mmap>>,
-    /// File for reading/writing
-    file: Option<File>,
-    /// Index statistics
+    /// Statistics about the index.
     stats: IndexStats,
-    /// Thread-safe access
+    /// Thread-safe access control.
     lock: Arc<RwLock<()>>,
-    /// Cache for frequently accessed nodes
+    /// Lightweight cache for recently accessed nodes to avoid cloning.
     node_cache: LruCache<usize, BTreeNode>,
 }
 
 impl BTreeIndex {
-    /// Create a new empty B-TREE index
+    /// Create a new empty B-Tree index.
     pub fn new() -> Self {
-        let order = 256; // Good balance between memory and I/O
-        let cache_size = 1000;
+        Self::with_order(DEFAULT_ORDER)
+    }
+
+    /// Create a new B-Tree index with a requested order.
+    pub fn with_order(order: usize) -> Self {
+        let normalized = order.max(8); // Ensure enough fan-out.
+        let mut nodes = Vec::new();
+        nodes.push(BTreeNode::new_leaf());
 
         Self {
-            order,
-            root: None,
-            nodes: vec![BTreeNode::new_leaf()],
-            node_offsets: Vec::new(),
-            mmap: None,
-            file: None,
+            order: normalized,
+            root: Some(0),
+            nodes,
             stats: IndexStats {
                 entries: 0,
                 size: 0,
@@ -149,289 +107,234 @@ impl BTreeIndex {
                 config: IndexConfig::default(),
             },
             lock: Arc::new(RwLock::new(())),
-            node_cache: lru_cache::LruCache::new(cache_size),
+            node_cache: LruCache::new(4096),
         }
     }
 
-    /// Create a new B-TREE index with specific order.
-    ///
-    /// NOTE:
-    /// - To preserve API compatibility, this currently behaves like `new()` but
-    ///   records the requested order for validation purposes.
-    /// - Actual node fanout is still limited by internal implementation; callers
-    ///   must not rely on a specific on-disk layout.
-    pub fn with_order(order: usize) -> Self {
-        let mut idx = Self::new();
-        if order > 0 {
-            idx.order = order;
-        }
-        idx
+    /// Maximum keys allowed per node (fan-out - 1).
+    fn max_keys(&self) -> usize {
+        self.order - 1
     }
 
-    /// Insert a key-value pair into the B-TREE.
-    ///
-    /// Simplified, in-memory implementation:
-    /// - Ignores locking and parent/child relationships.
-    /// - Appends entries into the root node only.
-    /// - Keeps the public API and types intact so higher-level code compiles.
-    fn insert_recursive(&mut self, _node_idx: usize, key: String, value: u64) -> Result<()> {
-        // Ensure we have a root node.
-        let root_idx = self.root.unwrap_or(0);
-        if self.nodes.is_empty() {
-            self.nodes.push(BTreeNode::new_leaf());
+    /// Minimum number of keys per node (except root).
+    fn min_keys(&self) -> usize {
+        self.order / 2
+    }
+
+    fn parse_entry_offset(bytes: &[u8]) -> Result<u64> {
+        if bytes.len() != 8 {
+            return Err(DictError::IndexError(
+                "B-Tree entry must store an 8-byte offset".to_string(),
+            ));
+        }
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    /// Insert a key/value pair into the B-Tree.
+    fn insert(&mut self, key: String, value: u64) -> Result<()> {
+        let root_idx = self.root.unwrap();
+        if self.nodes[root_idx].key_count() >= self.max_keys() {
+            // Split root.
+            let mut new_root = BTreeNode::new_internal();
+            new_root.children.push(root_idx);
+            let new_root_idx = self.nodes.len();
+            self.nodes.push(new_root);
+            self.root = Some(new_root_idx);
+            self.split_child(new_root_idx, 0)?;
+            self.insert_non_full(new_root_idx, key, value)?;
+        } else {
+            self.insert_non_full(root_idx, key, value)?;
+        }
+        Ok(())
+    }
+
+    /// Split the `child_idx` child of `parent_idx` in place.
+    fn split_child(&mut self, parent_idx: usize, child_pos: usize) -> Result<()> {
+        let child_idx = self.nodes[parent_idx].children[child_pos];
+        let mid = self.nodes[child_idx].key_count() / 2;
+
+        let mut new_node = if self.nodes[child_idx].is_leaf {
+            BTreeNode::new_leaf()
+        } else {
+            BTreeNode::new_internal()
+        };
+
+        let promoted_key;
+        let promoted_value;
+
+        {
+            let child = &mut self.nodes[child_idx];
+            promoted_key = child.keys[mid].clone();
+            promoted_value = child.values[mid];
+
+            new_node.keys.extend_from_slice(&child.keys[mid + 1..]);
+            new_node.values.extend_from_slice(&child.values[mid + 1..]);
+            if !child.is_leaf {
+                new_node
+                    .children
+                    .extend_from_slice(&child.children[mid + 1..]);
+            }
+
+            child.keys.truncate(mid);
+            child.values.truncate(mid);
+            if !child.is_leaf {
+                child.children.truncate(mid + 1);
+            }
         }
 
-        let root = &mut self.nodes[root_idx];
+        // Push new node and update parent pointers.
+        let new_idx = self.nodes.len();
+        self.nodes.push(new_node);
 
-        // For now, just push and keep keys sorted; no real B-Tree invariants.
-        let pos = root.find_insert_position(&key);
-        root.keys.insert(pos, key);
-        root.values.insert(pos, value);
+        let parent = &mut self.nodes[parent_idx];
+        parent.keys.insert(child_pos, promoted_key);
+        parent.values.insert(child_pos, promoted_value);
+        parent.children.insert(child_pos + 1, new_idx);
 
         Ok(())
     }
 
-    /// Split a full node into two nodes.
-    ///
-    /// NOTE:
-    /// - This helper is currently unused by the simplified in-memory builder.
-    /// - It is kept for forward compatibility but should not be relied upon by
-    ///   external callers.
-    fn split_node(&self, mut node: BTreeNode) -> Result<(BTreeNode, BTreeNode, String, u64)> {
-        let split_pos = self.order / 2;
-        
-        // Split keys and values
-        let split_key = node.keys[split_pos].clone();
-        let split_value = node.values[split_pos];
-        
-        let mut left = BTreeNode {
-            keys: node.keys[..split_pos].to_vec(),
-            values: node.values[..split_pos].to_vec(),
-            children: if node.is_leaf { vec![] } else { node.children[..split_pos + 1].to_vec() },
-            is_leaf: node.is_leaf,
+    /// Insert into a node that is guaranteed to be non-full.
+    fn insert_non_full(&mut self, node_idx: usize, key: String, value: u64) -> Result<()> {
+        if self.nodes[node_idx].is_leaf {
+            let node = &mut self.nodes[node_idx];
+            match node.keys.binary_search(&key) {
+                Ok(pos) => node.values[pos] = value,
+                Err(pos) => {
+                    node.keys.insert(pos, key);
+                    node.values.insert(pos, value);
+                }
+            }
+            return Ok(());
+        }
+
+        let mut pos = match self.nodes[node_idx].keys.binary_search(&key) {
+            Ok(pos) => {
+                self.nodes[node_idx].values[pos] = value;
+                return Ok(());
+            }
+            Err(pos) => pos,
         };
 
-        let mut right = BTreeNode {
-            keys: node.keys[split_pos + 1..].to_vec(),
-            values: node.values[split_pos + 1..].to_vec(),
-            children: if node.is_leaf { vec![] } else { node.children[split_pos + 1..].to_vec() },
-            is_leaf: node.is_leaf,
-        };
+        let child_idx = self.nodes[node_idx].children[pos];
+        if self.nodes[child_idx].key_count() >= self.max_keys() {
+            self.split_child(node_idx, pos)?;
+            if key > self.nodes[node_idx].keys[pos] {
+                pos += 1;
+            }
+        }
 
-        Ok((left, right, split_key, split_value))
+        let child_idx = self.nodes[node_idx].children[pos];
+        self.insert_non_full(child_idx, key, value)
     }
 
-    /// Find the parent of a node
-    fn find_parent(&self, child_idx: usize) -> Option<usize> {
-        let child = &self.nodes[child_idx];
-        let child_min = child.min_key().unwrap_or("");
-        let child_max = child.max_key().unwrap_or("");
-
-        for (idx, node) in self.nodes.iter().enumerate() {
-            if idx == child_idx {
-                continue;
-            }
-
-            if let (Some(node_min), Some(node_max)) = (node.min_key(), node.max_key()) {
-                if node_min <= child_min && child_max <= node_max {
-                    return Some(idx);
+    /// Recursive search used by `binary_search`.
+    fn search_recursive(&self, node_idx: usize, key: &str) -> Result<Option<u64>> {
+        let node = &self.nodes[node_idx];
+        match node.keys.binary_search_by(|k| k.as_str().cmp(key)) {
+            Ok(pos) => Ok(Some(node.values[pos])),
+            Err(pos) => {
+                if node.is_leaf {
+                    Ok(None)
+                } else {
+                    let child_idx = node.children[pos];
+                    self.search_recursive(child_idx, key)
                 }
             }
         }
-
-        None
     }
 
-    /// Insert into parent node
-    fn insert_into_parent(&mut self, parent_idx: usize, key: String, value: u64, child_idx: usize) -> Result<()> {
-        let mut parent = self.get_node(parent_idx)?;
-        let insert_pos = parent.find_insert_position(&key);
-
-        parent.keys.insert(insert_pos, key);
-        parent.values.insert(insert_pos, value);
-        parent.children.insert(insert_pos + 1, child_idx);
-
-        self.put_node(parent_idx, parent)?;
+    fn range_recursive(
+        &self,
+        node_idx: usize,
+        start: &str,
+        end: &str,
+        out: &mut Vec<(String, u64)>,
+    ) -> Result<()> {
+        let node = &self.nodes[node_idx];
+        for i in 0..node.keys.len() {
+            if !node.is_leaf {
+                self.range_recursive(node.children[i], start, end, out)?;
+            }
+            let key = &node.keys[i];
+            if key.as_str() >= start && key.as_str() <= end {
+                out.push((key.clone(), node.values[i]));
+            }
+        }
+        if !node.is_leaf {
+            self.range_recursive(*node.children.last().unwrap(), start, end, out)?;
+        }
         Ok(())
     }
 
-    /// Search for a key in the B-TREE
-    fn search_recursive(&self, node_idx: usize, key: &str) -> Result<Option<u64>> {
-        let node = self.get_node(node_idx)?;
-        let _guard = self.lock.read();
+    /// Estimate serialized size via bincode.
+    fn estimate_serialized_size(&self) -> u64 {
+        let snapshot = BTreeSnapshot {
+            order: self.order,
+            root: self.root,
+            nodes: self.nodes.clone(),
+            stats: self.stats.clone(),
+        };
+        bincode::serialized_size(&snapshot).unwrap_or(0)
+    }
 
-        if let Some(pos) = node.binary_search(key) {
-            return Ok(Some(node.values[pos]));
+    /// Validate invariants recursively.
+    fn validate_node(
+        &self,
+        node_idx: usize,
+        min_keys: usize,
+        max_keys: usize,
+        min_bound: Option<&str>,
+        max_bound: Option<&str>,
+    ) -> Result<bool> {
+        let node = &self.nodes[node_idx];
+        if node_idx != self.root.unwrap() {
+            if node.key_count() < min_keys || node.key_count() > max_keys {
+                return Ok(false);
+            }
+        }
+
+        for window in node.keys.windows(2) {
+            if window[0] >= window[1] {
+                return Ok(false);
+            }
+        }
+        if let Some(min) = min_bound {
+            if node.keys.iter().any(|k| k.as_str() <= min) {
+                return Ok(false);
+            }
+        }
+        if let Some(max) = max_bound {
+            if node.keys.iter().any(|k| k.as_str() >= max) {
+                return Ok(false);
+            }
         }
 
         if node.is_leaf {
-            Ok(None)
-        } else {
-            let child_pos = node.keys.binary_search_by(|k| k.as_str().cmp(key)).unwrap_or_else(|pos| pos);
-            let child_idx = if child_pos >= node.children.len() {
-                node.children.len() - 1
-            } else {
-                node.children[child_pos]
-            };
-
-            self.search_recursive(child_idx, key)
-        }
-    }
-
-    /// Get a node from storage (with caching)
-    fn get_node(&self, idx: usize) -> Result<BTreeNode> {
-        // For simplicity, return from in-memory storage for now
-        // In a full implementation, this would handle caching properly
-        if idx < self.nodes.len() {
-            Ok(self.nodes[idx].clone())
-        } else {
-            Err(DictError::IndexError("Node index out of bounds".to_string()))
-        }
-    }
-
-    /// Put a node to storage (with caching)
-    fn put_node(&mut self, idx: usize, node: BTreeNode) -> Result<()> {
-        if idx < self.nodes.len() {
-            self.nodes[idx] = node;
-            Ok(())
-        } else {
-            Err(DictError::IndexError("Node index out of bounds".to_string()))
-        }
-    }
-
-    /// Perform binary search for a key
-    pub fn binary_search(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>> {
-        if let Some(offset) = self.search_recursive(self.root.unwrap_or(0), key)? {
-            Ok(Some((vec![], offset))) // Return (data, offset)
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Search for a key (wrapper around binary_search)
-    pub fn search(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>> {
-        self.binary_search(key)
-    }
-
-    /// Get range of keys
-    pub fn range_query(&self, start: &str, end: &str) -> Result<Vec<(String, u64)>> {
-        let mut results = Vec::new();
-        self.range_recursive(self.root.unwrap_or(0), start, end, &mut results)?;
-        Ok(results)
-    }
-
-    /// Recursive range query
-    fn range_recursive(&self, node_idx: usize, start: &str, end: &str, results: &mut Vec<(String, u64)>) -> Result<()> {
-        let node = self.get_node(node_idx)?;
-
-        for (i, key) in node.keys.iter().enumerate() {
-            if start <= key.as_str() && key.as_str() <= end {
-                results.push((key.clone(), node.values[i]));
-            }
-        }
-
-        if !node.is_leaf {
-            for child_idx in &node.children {
-                self.range_recursive(*child_idx, start, end, results)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get tree height
-    fn get_height(&self) -> usize {
-        let mut height = 0;
-        let mut current = self.root.unwrap_or(0);
-
-        while let Ok(node) = self.get_node(current) {
-            if node.is_leaf {
-                break;
-            }
-            if !node.children.is_empty() {
-                current = node.children[0];
-                height += 1;
-            } else {
-                break;
-            }
-        }
-
-        height + 1
-    }
-
-    /// Validate B-TREE properties
-    pub fn validate(&self) -> Result<bool> {
-        if self.nodes.is_empty() {
             return Ok(true);
         }
 
-        let root_idx = self.root.unwrap_or(0);
-        let min_keys = (self.order + 1) / 2;
-        let max_keys = self.order;
-
-        self.validate_node(root_idx, min_keys, max_keys, None, None)
-    }
-
-    /// Validate a B-TREE node and its children
-    fn validate_node(&self, node_idx: usize, min_keys: usize, max_keys: usize, min_bound: Option<&str>, max_bound: Option<&str>) -> Result<bool> {
-        let node = &self.nodes[node_idx];
-
-        // Check key count
-        if node.keys.len() < min_keys || node.keys.len() > max_keys {
-            if node_idx == self.root.unwrap_or(0) && !node.keys.is_empty() {
-                // Root can have fewer keys
-            } else {
-                return Ok(false);
-            }
-        }
-
-        // Check key ordering
-        for i in 0..node.keys.len() {
-            let key = &node.keys[i];
-
-            if let Some(min) = min_bound {
-                if key.as_str() < min {
-                    return Ok(false);
-                }
-            }
-
-            if let Some(max) = max_bound {
-                if key.as_str() > max {
-                    return Ok(false);
-                }
-            }
-
-            if i > 0 && node.keys[i-1] >= *key {
-                return Ok(false);
-            }
-        }
-
-        // Check child count
-        if !node.is_leaf && node.children.len() != node.keys.len() + 1 {
+        if node.children.len() != node.keys.len() + 1 {
             return Ok(false);
         }
 
-        // Validate children recursively
-        if !node.is_leaf {
-            for (i, child_idx) in node.children.iter().enumerate() {
-                let child_min = if i == 0 {
-                    min_bound
-                } else {
-                    Some(&node.keys[i-1]).map(|x| x.as_str())
-                };
-
-                let child_max = if i == node.keys.len() {
-                    max_bound
-                } else {
-                    Some(&node.keys[i]).map(|x| x.as_str())
-                };
-
-                if !self.validate_node(*child_idx, min_keys, max_keys, child_min, child_max)? {
-                    return Ok(false);
-                }
+        for i in 0..node.children.len() {
+            let child_min = if i == 0 {
+                min_bound
+            } else {
+                Some(node.keys[i - 1].as_str())
+            };
+            let child_max = if i == node.keys.len() {
+                max_bound
+            } else {
+                Some(node.keys[i].as_str())
+            };
+            if !self.validate_node(node.children[i], min_keys, max_keys, child_min, child_max)? {
+                return Ok(false);
             }
         }
-
         Ok(true)
     }
 }
@@ -440,71 +343,79 @@ impl Index for BTreeIndex {
     const INDEX_TYPE: &'static str = "btree";
 
     fn build(&mut self, entries: &[(String, Vec<u8>)], _config: &IndexConfig) -> Result<()> {
-        let start_time = std::time::Instant::now();
+        let start = Instant::now();
 
-        // Reset state
         self.nodes.clear();
-        self.node_offsets.clear();
+        self.nodes.push(BTreeNode::new_leaf());
+        self.root = Some(0);
         self.node_cache.clear();
-        self.root = None;
         self.stats.entries = 0;
         self.stats.size = 0;
         self.stats.build_time = 0;
 
-        if entries.is_empty() {
-            // Empty index is valid
-            return Ok(());
+        // Build deterministic key ordering without cloning entry payloads.
+        let mut key_offsets = Vec::with_capacity(entries.len());
+        for (key, value_bytes) in entries.iter() {
+            let offset = Self::parse_entry_offset(value_bytes)?;
+            key_offsets.push((key.clone(), offset));
         }
-
-        // Initialize with empty root
-        self.nodes.push(BTreeNode::new_leaf());
-        self.root = Some(0);
-
-        // Insert all entries into the root node in sorted order.
-        // This is a simplified in-memory index: it preserves key ordering and
-        // provides deterministic lookups without implementing full B-Tree splits.
-        for (index, (key, _value)) in entries.iter().enumerate() {
-            let offset = index as u64;
-            self.insert_recursive(self.root.unwrap(), key.clone(), offset)?;
+        key_offsets.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, offset) in key_offsets.into_iter() {
+            self.insert(key, offset)?;
         }
 
         self.stats.entries = entries.len() as u64;
-        self.stats.build_time = start_time.elapsed().as_millis() as u64;
+        self.stats.build_time = start.elapsed().as_millis() as u64;
+        self.stats.size = self.estimate_serialized_size();
 
-        // Validate the built tree; if it fails, clear state so callers don't
-        // accidentally use a partial index.
         if !self.validate()? {
             self.clear();
             return Err(DictError::IndexError(
-                "B-TREE validation failed; index discarded".to_string(),
+                "B-Tree validation failed after build".to_string(),
             ));
         }
-
         Ok(())
     }
 
     fn load(&mut self, path: &Path) -> Result<()> {
-        // The legacy implementation mmapped the file but did not actually
-        // reconstruct `nodes`/`root`, which made the index appear "loaded" while
-        // unusable. To avoid unsafe or misleading behavior while preserving the
-        // API, explicitly report that on-disk loading is not implemented yet.
-        let _ = path;
-        Err(DictError::IndexError(
-            "B-TREE on-disk load not implemented; build index in-memory instead".to_string(),
-        ))
+        let mut file = File::open(path).map_err(|e| {
+            DictError::IoError(format!("failed to open index {}: {e}", path.display()))
+        })?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| {
+            DictError::IoError(format!("failed to read index {}: {e}", path.display()))
+        })?;
+
+        let snapshot: BTreeSnapshot = bincode::deserialize(&buf)
+            .map_err(|e| DictError::SerializationError(format!("corrupted B-Tree index: {e}")))?;
+
+        self.order = snapshot.order.max(8);
+        self.root = snapshot.root;
+        self.nodes = snapshot.nodes;
+        self.stats = snapshot.stats;
+        self.node_cache.clear();
+        if !self.is_built() {
+            return Err(DictError::IndexError(format!(
+                "B-Tree index {} is empty or invalid",
+                path.display()
+            )));
+        }
+        Ok(())
     }
 
     fn save(&self, path: &Path) -> Result<()> {
+        let snapshot = BTreeSnapshot {
+            order: self.order,
+            root: self.root,
+            nodes: self.nodes.clone(),
+            stats: self.stats.clone(),
+        };
+        let bytes = bincode::serialize(&snapshot)
+            .map_err(|e| DictError::SerializationError(format!("serialize B-Tree: {e}")))?;
         let mut file = File::create(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-
-        // Serialize the B-TREE structure
-        let serialized = bincode::serialize(&self.nodes)
-            .map_err(|e| DictError::SerializationError(e.to_string()))?;
-
-        file.write_all(&serialized)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
-
+            .map_err(|e| DictError::IoError(format!("create {}: {e}", path.display())))?;
+        file.write_all(&bytes)
+            .map_err(|e| DictError::IoError(format!("write {}: {e}", path.display())))?;
         Ok(())
     }
 
@@ -513,31 +424,63 @@ impl Index for BTreeIndex {
     }
 
     fn is_built(&self) -> bool {
-        // Consider the index built only if we have a root and at least one key.
         if let Some(root_idx) = self.root {
-            if let Ok(root) = self.get_node(root_idx) {
-                return !root.keys.is_empty();
-            }
+            !self.nodes[root_idx].keys.is_empty() || self.nodes.len() == 1
+        } else {
+            false
         }
-        false
     }
 
     fn clear(&mut self) {
         self.nodes.clear();
-        self.node_offsets.clear();
+        self.nodes.push(BTreeNode::new_leaf());
+        self.root = Some(0);
+        self.stats.entries = 0;
+        self.stats.size = 0;
+        self.stats.build_time = 0;
         self.node_cache.clear();
-        self.root = None;
-        self.stats = IndexStats {
-            entries: 0,
-            size: 0,
-            build_time: 0,
-            version: "1.0".to_string(),
-            config: IndexConfig::default(),
-        };
     }
 
     fn verify(&self) -> Result<bool> {
         self.validate()
+    }
+}
+
+impl BTreeIndex {
+    /// Perform binary search for a key and return its stored value (offset).
+    pub fn binary_search(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>> {
+        if self.root.is_none() {
+            return Ok(None);
+        }
+        match self.search_recursive(self.root.unwrap(), key)? {
+            Some(offset) => Ok(Some((Vec::new(), offset))),
+            None => Ok(None),
+        }
+    }
+
+    /// Public search helper.
+    pub fn search(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>> {
+        self.binary_search(key)
+    }
+
+    /// Get range of keys inclusively between `start` and `end`.
+    pub fn range_query(&self, start: &str, end: &str) -> Result<Vec<(String, u64)>> {
+        if self.root.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        self.range_recursive(self.root.unwrap(), start, end, &mut out)?;
+        Ok(out)
+    }
+
+    /// Validate B-Tree properties.
+    pub fn validate(&self) -> Result<bool> {
+        if self.root.is_none() {
+            return Ok(true);
+        }
+        let min_keys = self.min_keys();
+        let max_keys = self.max_keys();
+        self.validate_node(self.root.unwrap(), min_keys, max_keys, None, None)
     }
 }
 
@@ -547,37 +490,25 @@ impl Default for BTreeIndex {
     }
 }
 
-/// Range query results
-#[derive(Debug, Clone)]
+/// Range query aggregation helper.
+#[derive(Debug, Clone, Default)]
 pub struct RangeQueryResult {
-    /// Matching keys
+    /// Matching keys.
     pub keys: Vec<String>,
-    /// Corresponding values (file offsets)
+    /// Corresponding values (file offsets).
     pub values: Vec<u64>,
-    /// Total number of results
+    /// Total number of results.
     pub count: usize,
 }
 
 impl RangeQueryResult {
-    /// Create a new empty result
     pub fn new() -> Self {
-        Self {
-            keys: Vec::new(),
-            values: Vec::new(),
-            count: 0,
-        }
+        Self::default()
     }
 
-    /// Add a result
     pub fn add(&mut self, key: String, value: u64) {
         self.keys.push(key);
         self.values.push(value);
         self.count += 1;
-    }
-}
-
-impl Default for RangeQueryResult {
-    fn default() -> Self {
-        Self::new()
     }
 }

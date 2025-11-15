@@ -3,23 +3,24 @@
 //! This module provides implementations for various dictionary formats including
 //! Monkey's Dictionary (MDict), StarDict, and ZIM format dictionaries.
 
+pub mod bgl;
+pub mod dsl;
 pub mod mdict;
 pub mod stardict;
 pub mod zimdict;
-pub mod dsl;
-pub mod bgl;
 
+pub use bgl::BglDict;
+pub use dsl::DslDict;
 pub use mdict::MDict;
 pub use stardict::StarDict;
 pub use zimdict::ZimDict;
-pub use dsl::DslDict;
-pub use bgl::BglDict;
 
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 
 use crate::traits::{
-    Dict, DictBuilder, DictConfig, DictError, DictFormat, Result, FORMAT_MDICT, FORMAT_STARDICT, FORMAT_ZIM,
+    Dict, DictBuilder, DictConfig, DictError, DictFormat, Result, FORMAT_MDICT, FORMAT_STARDICT,
+    FORMAT_ZIM,
 };
 
 /// Dictionary format detection and loading
@@ -46,10 +47,10 @@ impl DictLoader {
     /// Load dictionary from file with automatic format detection
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<Box<dyn Dict<String> + Send + Sync>> {
         let path = path.as_ref();
-        
+
         // Try to detect format from file extension
         let format = self.detect_format(path)?;
-        
+
         match format.as_str() {
             FORMAT_MDICT => MDict::load(path, self.default_config.clone()),
             FORMAT_STARDICT => StarDict::load(path, self.default_config.clone()),
@@ -63,12 +64,12 @@ impl DictLoader {
 
     /// Load dictionary with specific format
     pub fn load_format<P: AsRef<Path>>(
-        &self, 
-        path: P, 
-        format: &str
+        &self,
+        path: P,
+        format: &str,
     ) -> Result<Box<dyn Dict<String> + Send + Sync>> {
         let path = path.as_ref();
-        
+
         match format {
             FORMAT_MDICT => MDict::load(path, self.default_config.clone()),
             FORMAT_STARDICT => StarDict::load(path, self.default_config.clone()),
@@ -82,7 +83,8 @@ impl DictLoader {
 
     /// Detect dictionary format from file
     pub fn detect_format(&self, path: &Path) -> Result<String> {
-        let extension = path.extension()
+        let extension = path
+            .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -107,14 +109,14 @@ impl DictLoader {
             return Err(DictError::FileNotFound(path.display().to_string()));
         }
 
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
 
         let mut reader = BufReader::new(file);
         let mut header = String::new();
 
         // Read first line or up to 20 bytes
-        let bytes_read = reader.read_line(&mut header)
+        let bytes_read = reader
+            .read_line(&mut header)
             .map_err(|e| DictError::IoError(e.to_string()))?;
 
         if bytes_read == 0 {
@@ -133,7 +135,7 @@ impl DictLoader {
             Ok(FORMAT_MDICT.to_string())
         } else {
             Err(DictError::UnsupportedOperation(
-                "Cannot detect dictionary format".to_string()
+                "Cannot detect dictionary format".to_string(),
             ))
         }
     }
@@ -141,7 +143,7 @@ impl DictLoader {
     /// Scan directory for dictionary files
     pub fn scan_directory<P: AsRef<Path>>(&self, dir: P) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
-        
+
         if !dir.exists() || !dir.is_dir() {
             return Err(DictError::FileNotFound(format!(
                 "Directory not found: {}",
@@ -152,9 +154,7 @@ impl DictLoader {
         let mut dict_files = Vec::new();
 
         // Scan for supported file extensions
-        for entry in std::fs::read_dir(dir)
-            .map_err(|e| DictError::IoError(e.to_string()))? {
-            
+        for entry in std::fs::read_dir(dir).map_err(|e| DictError::IoError(e.to_string()))? {
             let entry = entry.map_err(|e| DictError::IoError(e.to_string()))?;
             let path = entry.path();
 
@@ -220,17 +220,16 @@ impl DictFormat<String> for MDict {
         }
 
         // Try to read header
-        let result = std::fs::File::open(path)
-            .and_then(|mut file| {
-                use std::io::Read;
-                let mut header = [0u8; 8];
-                file.read_exact(&mut header)?;
-                Ok(header)
-            });
+        let result = std::fs::File::open(path).and_then(|mut file| {
+            use std::io::Read;
+            let mut header = [0u8; 8];
+            file.read_exact(&mut header)?;
+            Ok(header)
+        });
 
         match result {
-            Ok(header) => Ok(header.starts_with(b"MDict") || 
-                           String::from_utf8_lossy(&header).starts_with("Version")),
+            Ok(header) => Ok(header.starts_with(b"MDict")
+                || String::from_utf8_lossy(&header).starts_with("Version")),
             Err(_) => Ok(false),
         }
     }
@@ -254,13 +253,12 @@ impl DictFormat<String> for StarDict {
         }
 
         // Try to read header
-        let result = std::fs::File::open(path)
-            .and_then(|mut file| {
-                use std::io::Read;
-                let mut header = [0u8; 14];
-                file.read_exact(&mut header)?;
-                Ok(header)
-            });
+        let result = std::fs::File::open(path).and_then(|mut file| {
+            use std::io::Read;
+            let mut header = [0u8; 14];
+            file.read_exact(&mut header)?;
+            Ok(header)
+        });
 
         match result {
             Ok(header) => Ok(header.starts_with(b"StarDict's dict")),
@@ -287,13 +285,12 @@ impl DictFormat<String> for ZimDict {
         }
 
         // Try to read header
-        let result = std::fs::File::open(path)
-            .and_then(|mut file| {
-                use std::io::Read;
-                let mut header = [0u8; 4];
-                file.read_exact(&mut header)?;
-                Ok(header)
-            });
+        let result = std::fs::File::open(path).and_then(|mut file| {
+            use std::io::Read;
+            let mut header = [0u8; 4];
+            file.read_exact(&mut header)?;
+            Ok(header)
+        });
 
         match result {
             Ok(header) => Ok(&header == b"ZIM\x01"),
@@ -313,8 +310,8 @@ pub struct BatchOperations;
 impl BatchOperations {
     /// Batch load multiple dictionaries
     pub fn load_batch<P: AsRef<Path>>(
-        paths: &[P], 
-        config: Option<DictConfig>
+        paths: &[P],
+        config: Option<DictConfig>,
     ) -> Result<Vec<Box<dyn Dict<String> + Send + Sync>>> {
         let config = config.unwrap_or_default();
         let loader = DictLoader::with_config(config);
@@ -335,8 +332,7 @@ impl BatchOperations {
         dictionaries: &[Box<dyn Dict<String> + Send + Sync>],
         query: &str,
         search_type: SearchType,
-    ) -> Result<Vec<SearchResult<String>>>
-    {
+    ) -> Result<Vec<SearchResult<String>>> {
         let mut results: Vec<SearchResult<String>> = Vec::new();
 
         for dict in dictionaries {
@@ -364,7 +360,9 @@ impl BatchOperations {
         results.sort_by(|a, b| {
             let score_a = a.score.unwrap_or(0.0);
             let score_b = b.score.unwrap_or(0.0);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         Ok(results)
@@ -377,7 +375,12 @@ impl BatchOperations {
         format: &str,
     ) -> Result<()>
     where
-        K: Clone + std::fmt::Display + serde::Serialize + serde::de::DeserializeOwned + Eq + std::hash::Hash,
+        K: Clone
+            + std::fmt::Display
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + Eq
+            + std::hash::Hash,
     {
         if dictionaries.is_empty() {
             return Err(DictError::InvalidFormat(
@@ -507,10 +510,9 @@ impl BatchOperations {
         for path in paths {
             let path = path.as_ref();
 
-            let is_valid =
-                <MDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false) ||
-                <StarDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false) ||
-                <ZimDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false);
+            let is_valid = <MDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false)
+                || <StarDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false)
+                || <ZimDict as DictFormat<String>>::is_valid_format(path).unwrap_or(false);
 
             results.push((path.to_path_buf(), is_valid));
         }
@@ -552,8 +554,7 @@ pub mod utils {
     /// Get file size of dictionary
     pub fn get_dict_size<P: AsRef<Path>>(path: P) -> Result<u64> {
         let path = path.as_ref();
-        let metadata = std::fs::metadata(path)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        let metadata = std::fs::metadata(path).map_err(|e| DictError::IoError(e.to_string()))?;
         Ok(metadata.len())
     }
 
@@ -578,14 +579,14 @@ pub mod utils {
         let destination = destination.as_ref();
 
         // Copy file
-        std::fs::copy(source, destination)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        std::fs::copy(source, destination).map_err(|e| DictError::IoError(e.to_string()))?;
 
         // Create indexes if requested
         if create_indexes {
             let loader = DictLoader::new();
             let mut dict = loader.load(destination)?;
-            dict.build_indexes().map_err(|e| DictError::Internal(e.to_string()))?;
+            dict.build_indexes()
+                .map_err(|e| DictError::Internal(e.to_string()))?;
         }
 
         Ok(())
@@ -598,8 +599,7 @@ pub mod utils {
 
         // Remove main file
         if path.exists() {
-            std::fs::remove_file(path)
-                .map_err(|e| DictError::IoError(e.to_string()))?;
+            std::fs::remove_file(path).map_err(|e| DictError::IoError(e.to_string()))?;
         }
 
         // Remove index files
@@ -607,8 +607,7 @@ pub mod utils {
         for ext in &extensions {
             let index_path = path.with_extension(ext);
             if index_path.exists() {
-                std::fs::remove_file(&index_path)
-                    .map_err(|e| DictError::IoError(e.to_string()))?;
+                std::fs::remove_file(&index_path).map_err(|e| DictError::IoError(e.to_string()))?;
             }
         }
 

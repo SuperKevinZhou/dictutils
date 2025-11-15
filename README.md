@@ -2,6 +2,12 @@
 
 A high-performance Rust library for fast dictionary operations with support for multiple dictionary formats (MDict, StarDict, ZIM) and advanced indexing capabilities.
 
+## ⚠️ Experimental Status
+
+DictUtils is currently experimental and not suitable for production use. Many format parsers rely on placeholder logic that does not validate real dictionary files, index sidecars are not compatible with production dictionaries, and compression/IO helpers are best-effort prototypes. Use this crate only for prototyping or research experiments. Contributions are welcome to replace the mock parsing layers with real format support.
+
+
+
 [![Crates.io](https://img.shields.io/crates/v/dictutils.svg)](https://crates.io/crates/dictutils)
 [![Documentation](https://docs.rs/dictutils/badge.svg)](https://docs.rs/dictutils)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -28,7 +34,7 @@ Or with optional features:
 
 ```toml
 [dependencies]
-dictutils = { version = "0.1.0", features = ["criterion", "rayon", "cli"] }
+dictutils = { version = "0.1.0", features = ["criterion", "rayon", "cli", "encoding-support"] }
 ```
 
 Basic usage example:
@@ -373,12 +379,13 @@ High-performance binary format with:
 **Best for**: Large dictionaries, performance-critical applications
 
 ### StarDict
-
+ 
 Classic format with:
 - Binary search support
 - Synonym and mnemonic files
 - Cross-platform compatibility
 - Simple text-based format
+- Enhanced DICTZIP handling: random-access via RA tables or deterministic sequential inflation when RA is missing
 
 **Best for**: General purpose dictionaries, simple implementations
 
@@ -476,11 +483,11 @@ Enable additional functionality with Cargo features:
 [dependencies.dictutils]
 version = "0.1.0"
 features = [
-    "criterion",      # Performance benchmarks
-    "rayon",          # Parallel processing
-    "cli",            # Command-line tools
-    "serde",          # Serialization support
-    "debug_leaks"     # Memory leak detection
+    "criterion",          # Performance benchmarks
+    "rayon",              # Parallel processing
+    "cli",                # Command-line tools
+    "serde",              # Serialization support
+    "debug_leaks"         # Memory leak detection
 ]
 ```
 

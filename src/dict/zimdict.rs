@@ -81,8 +81,7 @@ impl ZimDict {
         }
 
         // Open ZIM file
-        let file = File::open(path)
-            .map_err(|e| DictError::IoError(format!("open zim: {e}")))?;
+        let file = File::open(path).map_err(|e| DictError::IoError(format!("open zim: {e}")))?;
 
         // Parse header
         let header = Self::read_header(&file)?;
@@ -95,13 +94,11 @@ impl ZimDict {
 
         // Memory-map file if enabled
         let mmap = if config.use_mmap {
-            Some(Arc::new(
-                unsafe {
-                    memmap2::MmapOptions::new()
-                        .map(&file)
-                        .map_err(|e| DictError::MmapError(e.to_string()))?
-                },
-            ))
+            Some(Arc::new(unsafe {
+                memmap2::MmapOptions::new()
+                    .map(&file)
+                    .map_err(|e| DictError::MmapError(e.to_string()))?
+            }))
         } else {
             None
         };
@@ -113,10 +110,7 @@ impl ZimDict {
         let (btree_index, fts_index) = Self::load_sidecar_indexes(&file_path, &config)?;
 
         // Build metadata (name/description come from external index or meta-items; for now minimal)
-        let file_size = file
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
         let name = file_path
             .file_stem()
@@ -137,8 +131,7 @@ impl ZimDict {
             has_fts: fts_index.is_some(),
         };
 
-        let entry_cache =
-            Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
+        let entry_cache = Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
 
         Ok(Self {
             file_path,
@@ -175,10 +168,8 @@ impl ZimDict {
         let minor_version = u16::from_le_bytes([buf[6], buf[7]]);
 
         // uuid[16] at 8..24
-        let article_count =
-            u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
-        let cluster_count =
-            u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]);
+        let article_count = u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
+        let cluster_count = u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]);
 
         let url_ptr_pos = u64::from_le_bytes([
             buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
@@ -231,9 +222,7 @@ impl ZimDict {
                     Err(e) => {
                         // EOF or error: stop
                         if list.is_empty() {
-                            return Err(DictError::IoError(format!(
-                                "read mime list: {e}"
-                            )));
+                            return Err(DictError::IoError(format!("read mime list: {e}")));
                         }
                         return Ok(list);
                     }
@@ -312,9 +301,7 @@ impl ZimDict {
                 .checked_add(size)
                 .ok_or_else(|| DictError::Internal("overflow in zim read_raw".into()))?;
             if end as usize > mmap.len() {
-                return Err(DictError::IoError(
-                    "ZIM read past end of file".to_string(),
-                ));
+                return Err(DictError::IoError("ZIM read past end of file".to_string()));
             }
             Ok(mmap[offset as usize..end as usize].to_vec())
         } else {
@@ -361,9 +348,7 @@ impl ZimDict {
             .header
             .url_ptr_pos
             .checked_add(article_no as u64 * 8)
-            .ok_or_else(|| {
-                DictError::InvalidFormat("ZIM: url_ptr_pos overflow".to_string())
-            })?;
+            .ok_or_else(|| DictError::InvalidFormat("ZIM: url_ptr_pos overflow".to_string()))?;
         rdr.seek(SeekFrom::Start(url_ptr))
             .map_err(|e| DictError::IoError(format!("seek urlPtr: {e}")))?;
         let mut pos_buf = [0u8; 8];
@@ -385,8 +370,7 @@ impl ZimDict {
             let mut buf = [0u8; 1 + 1 + 4 + 4];
             rdr.read_exact(&mut buf)
                 .map_err(|e| DictError::IoError(format!("read redirect: {e}")))?;
-            let redirect_index =
-                u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+            let redirect_index = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
             // Recursive/loop-safe resolution left out for brevity.
             self.read_article_location(redirect_index)?
         } else {
@@ -405,9 +389,7 @@ impl ZimDict {
             .header
             .url_ptr_pos
             .checked_add(article_no as u64 * 8)
-            .ok_or_else(|| {
-                DictError::InvalidFormat("ZIM: url_ptr_pos overflow".to_string())
-            })?;
+            .ok_or_else(|| DictError::InvalidFormat("ZIM: url_ptr_pos overflow".to_string()))?;
         rdr.seek(SeekFrom::Start(url_ptr))
             .map_err(|e| DictError::IoError(format!("seek urlPtr: {e}")))?;
         let mut pos_buf = [0u8; 8];
@@ -446,9 +428,7 @@ impl ZimDict {
             .header
             .cluster_ptr_pos
             .checked_add(cluster_no as u64 * 8)
-            .ok_or_else(|| {
-                DictError::InvalidFormat("ZIM: cluster_ptr_pos overflow".to_string())
-            })?;
+            .ok_or_else(|| DictError::InvalidFormat("ZIM: cluster_ptr_pos overflow".to_string()))?;
         rdr.seek(SeekFrom::Start(cluster_ptr))
             .map_err(|e| DictError::IoError(format!("seek clusterPtr: {e}")))?;
         let mut off_buf = [0u8; 8];
@@ -463,9 +443,7 @@ impl ZimDict {
         rdr.read_exact(&mut header_byte)
             .map_err(|e| DictError::IoError(format!("read cluster header: {e}")))?;
         let compression_type = header_byte[0] & 0x0F;
-        let blobs_offset_size = if (header_byte[0] & 0x10) != 0
-            && self.header.major_version >= 6
-        {
+        let blobs_offset_size = if (header_byte[0] & 0x10) != 0 && self.header.major_version >= 6 {
             8
         } else {
             4
@@ -492,9 +470,7 @@ impl ZimDict {
             .map_err(|e| DictError::IoError(format!("seek next clusterPtr: {e}")))?;
             let mut next_buf = [0u8; 8];
             rdr.read_exact(&mut next_buf)
-                .map_err(|e| {
-                    DictError::IoError(format!("read next cluster offset: {e}"))
-                })?;
+                .map_err(|e| DictError::IoError(format!("read next cluster offset: {e}")))?;
             u64::from_le_bytes(next_buf)
         } else {
             file_len
@@ -564,9 +540,7 @@ impl ZimDict {
         let (start, end) = if blobs_offset_size == 8 {
             let base = blob_no as usize * 8;
             let mut off_bytes = [0u8; 16];
-            off_bytes.copy_from_slice(
-                &decompressed[base..base + 16],
-            );
+            off_bytes.copy_from_slice(&decompressed[base..base + 16]);
             let o1 = u64::from_le_bytes(off_bytes[0..8].try_into().unwrap()) as usize;
             let o2 = u64::from_le_bytes(off_bytes[8..16].try_into().unwrap()) as usize;
             (o1, o2)
@@ -684,10 +658,7 @@ impl Dict<String> for ZimDict {
         }
     }
 
-    fn get_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
+    fn get_range(&self, range: std::ops::Range<usize>) -> Result<Vec<(String, Vec<u8>)>> {
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -714,9 +685,7 @@ impl Dict<String> for ZimDict {
 
     fn iter(&self) -> Result<EntryIterator<'_, String>> {
         let btree = self.btree_index.as_ref().ok_or_else(|| {
-            DictError::UnsupportedOperation(
-                "ZIM iter requires a loaded BTree index".to_string(),
-            )
+            DictError::UnsupportedOperation("ZIM iter requires a loaded BTree index".to_string())
         })?;
 
         let all = btree.range_query("", "\u{10FFFF}")?;
@@ -733,10 +702,7 @@ impl Dict<String> for ZimDict {
         prefix: &str,
     ) -> Result<Box<dyn Iterator<Item = Result<(String, Vec<u8>)>> + Send>> {
         let hits = self.search_prefix(prefix, Some(256))?;
-        let mapped: Vec<_> = hits
-            .into_iter()
-            .map(|sr| Ok((sr.word, sr.entry)))
-            .collect();
+        let mapped: Vec<_> = hits.into_iter().map(|sr| Ok((sr.word, sr.entry))).collect();
         Ok(Box::new(mapped.into_iter()))
     }
 
@@ -793,16 +759,17 @@ impl Dict<String> for ZimDict {
         let mut entries_for_fts: Vec<(String, Vec<u8>)> = Vec::with_capacity(all.len());
         let idx_cfg = crate::index::IndexConfig::default();
 
+        let mut offsets: Vec<(String, u64)> = Vec::with_capacity(all.len());
         for (key, off) in all {
             let data = self.read_article_by_number(off as u32)?;
             entries_for_fts.push((key.clone(), data));
+            offsets.push((key, off));
         }
 
-        // For BTree we use ordinal offsets into entries_for_fts as values.
-        let btree_entries: Vec<(String, Vec<u8>)> = entries_for_fts
+        // Persist actual record offsets to keep sidecars aligned with on-disk data.
+        let btree_entries: Vec<(String, Vec<u8>)> = offsets
             .iter()
-            .enumerate()
-            .map(|(i, (k, _))| (k.clone(), (i as u64).to_le_bytes().to_vec()))
+            .map(|(key, offset)| (key.clone(), offset.to_le_bytes().to_vec()))
             .collect();
         btree.build(&btree_entries, &idx_cfg)?;
         if !btree.is_built() {
@@ -831,10 +798,7 @@ impl HighPerformanceDict<String> for ZimDict {
         self.get(key)
     }
 
-    fn stream_search(
-        &self,
-        query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
+    fn stream_search(&self, query: &str) -> Result<Box<dyn Iterator<Item = Result<SearchResult>>>> {
         // Use fulltext (or its fallback) and erase Send to match trait signature.
         let it = self.search_fulltext(query)?;
         Ok(Box::new(it))

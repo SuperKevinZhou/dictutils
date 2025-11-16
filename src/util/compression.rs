@@ -95,15 +95,24 @@ fn decompress_gzip(compressed: &[u8]) -> Result<Vec<u8>> {
 
 // LZ4 compression
 fn compress_lz4(data: &[u8]) -> Result<Vec<u8>> {
-    Ok(lz4_flex::compress(data))
+    // Use frame format for consistency with decompression
+    let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
+    encoder
+        .write_all(data)
+        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
+    encoder
+        .finish()
+        .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 fn decompress_lz4(compressed: &[u8]) -> Result<Vec<u8>> {
-    // For decompress, we need to know the original size or use frame format
-    // Since we're using block format for compression, try to decompress with estimated size
-    let estimated_size = compressed.len() * 4; // Rough estimate
-    lz4_flex::decompress(compressed, estimated_size)
-        .map_err(|e| DictError::DecompressionError(e.to_string()))
+    // Use frame decoder which can determine the output size automatically
+    let mut decoder = lz4_flex::frame::FrameDecoder::new(Cursor::new(compressed));
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
+    Ok(decompressed)
 }
 
 // Zstandard compression

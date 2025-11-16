@@ -130,6 +130,11 @@ pub mod cli {
     use crate::traits::*;
     use std::path::PathBuf;
 
+    /// Sanitize output to prevent ANSI escape code injection
+    fn sanitize_output(input: &str) -> String {
+        input.replace('\x1b', "\\x1b")
+    }
+
     /// Command-line interface utilities
     pub fn print_dict_info<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
         let path = path.as_ref();
@@ -137,16 +142,16 @@ pub mod cli {
 
         println!("Dictionary Information");
         println!("===================");
-        println!("Path: {}", path.display());
+        println!("Path: {}", sanitize_output(&path.display().to_string()));
 
         if let Ok(format) = loader.detect_format(path) {
-            println!("Format: {}", format);
+            println!("Format: {}", sanitize_output(&format));
         }
 
         if let Ok(mut dict) = loader.load(path) {
             let metadata = dict.metadata();
-            println!("Name: {}", metadata.name);
-            println!("Version: {}", metadata.version);
+            println!("Name: {}", sanitize_output(&metadata.name));
+            println!("Version: {}", sanitize_output(&metadata.version));
             println!("Entries: {}", metadata.entries);
             println!("Size: {} bytes", metadata.file_size);
             println!("Has B-TREE: {}", metadata.has_btree);
@@ -158,7 +163,7 @@ pub mod cli {
 
             // Print index sizes
             for (index, size) in &stats.index_sizes {
-                println!("{} Index: {} bytes", index, size);
+                println!("{} Index: {} bytes", sanitize_output(index), size);
             }
         }
 
@@ -176,7 +181,7 @@ pub mod cli {
         let loader = DictLoader::new();
         let mut dict = loader.load(path)?;
 
-        println!("Search Results for '{}'", query);
+        println!("Search Results for '{}'", sanitize_output(query));
         println!("===========================");
 
         let results = match search_type {
@@ -195,7 +200,7 @@ pub mod cli {
         }?;
 
         for result in results.iter().take(limit.unwrap_or(10)) {
-            println!("- {}", result.word);
+            println!("- {}", sanitize_output(&result.word));
             if let Some(score) = result.score {
                 println!("  Score: {:.3}", score);
             }

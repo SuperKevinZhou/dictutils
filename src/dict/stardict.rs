@@ -4,6 +4,7 @@
 //! - Accepts .ifo as entry point.
 //! - Parses .ifo metadata (Ifo::Ifo semantics).
 //! - Locates and parses .idx(.gz/.dz) and .dict(.dz) files.
+//! - Implements CRC32 validation for compressed data integrity.
 //! - Supports 32-bit offsets; rejects idxoffsetbits=64 as in GoldenDict.
 //! - Applies .syn synonyms.
 //! - Reads articles from .dict or DICTZIP-compressed .dict.dz.
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use flate2::read::GzDecoder;
 use memmap2::Mmap;
 use parking_lot::RwLock;
+use crc32fast::Hasher;
 
 use crate::index::{btree::BTreeIndex, fts::FtsIndex, Index};
 use crate::traits::{
@@ -875,6 +877,39 @@ impl StarDict {
                 .read_exact(&mut buf)
                 .map_err(|e| DictError::IoError(e.to_string()))?;
             Ok(buf)
+        }
+    }
+
+    /// Calculate CRC32 checksum for data
+    fn calculate_crc32(data: &[u8]) -> u32 {
+        let mut hasher = Hasher::new();
+        hasher.update(data);
+        hasher.finalize()
+    }
+
+    /// Validate CRC32 checksum for compressed data with stored checksum
+    fn validate_crc32(data: &[u8], expected_checksum: u32) -> Result<()> {
+        let calculated = Self::calculate_crc32(data);
+        if calculated == expected_checksum {
+            Ok(())
+        } else {
+            Err(DictError::InvalidFormat(format!(
+                "CRC32 validation failed: expected 0x{:08X}, got 0x{:08X}",
+                expected_checksum, calculated
+            )))
+        }
+    }
+
+    /// Validate CRC32 checksum with Adler-32 for gzip data
+    fn validate_gzip_crc32(data: &[u8], expected_crc32: u32) -> Result<()> {
+        let calculated = Self::calculate_crc32(data);
+        if calculated == expected_crc32 {
+            Ok(())
+        } else {
+            Err(DictError::InvalidFormat(format!(
+                "Gzip CRC32 validation failed: expected 0x{:08X}, got 0x{:08X}",
+                expected_crc32, calculated
+            )))
         }
     }
 

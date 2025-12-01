@@ -103,7 +103,7 @@ impl DictLoader {
     /// Detect format by reading file header
     fn detect_format_by_header(&self, path: &Path) -> Result<String> {
         use std::fs::File;
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Read};
 
         if !path.exists() {
             return Err(DictError::FileNotFound(path.display().to_string()));
@@ -114,10 +114,13 @@ impl DictLoader {
         let mut reader = BufReader::new(file);
         let mut header = String::new();
 
-        // Read first line or up to 20 bytes
-        let bytes_read = reader
-            .read_line(&mut header)
-            .map_err(|e| DictError::IoError(e.to_string()))?;
+        // Read a bounded header slice to avoid OOM on binary files
+        let bytes_read = {
+            let mut limited = reader.take(4096);
+            limited
+                .read_to_string(&mut header)
+                .map_err(|e| DictError::IoError(e.to_string()))?
+        };
 
         if bytes_read == 0 {
             return Err(DictError::InvalidFormat("Empty file".to_string()));

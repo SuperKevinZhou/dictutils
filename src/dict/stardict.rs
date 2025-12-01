@@ -66,6 +66,9 @@ struct EntryLoc {
     size: u64,
 }
 
+/// Safety cap to avoid decompressing arbitrarily large dictzip payloads.
+const DICTDZ_MAX_DECOMPRESSED: usize = 128 * 1024 * 1024;
+
 /// Main StarDict implementation
 pub struct StarDict {
     /// .ifo path
@@ -627,12 +630,18 @@ impl StarDict {
 
             // Parse FEXTRA to find "RA" subfield if present.
             let mut ra_chunks: Option<(u16, Vec<u32>)> = None;
+            let mut extra_len: u16 = 0;
             if fextra {
                 let mut len_buf = [0u8; 2];
                 file.read_exact(&mut len_buf)
                     .map_err(|e| DictError::IoError(format!("dict.dz read extra length: {e}")))?;
-                let xlen = u16::from_le_bytes(len_buf);
-                let mut extra = vec![0u8; xlen as usize];
+                extra_len = u16::from_le_bytes(len_buf);
+                if extra_len as usize > 64 * 1024 {
+                    return Err(DictError::InvalidFormat(
+                        "dict.dz FEXTRA length exceeds safety limit".to_string(),
+                    ));
+                }
+                let mut extra = vec![0u8; extra_len as usize];
                 file.read_exact(&mut extra)
                     .map_err(|e| DictError::IoError(format!("dict.dz read extra: {e}")))?;
 
@@ -649,6 +658,11 @@ impl StarDict {
                     // dictzip "RA" subfield marks random access table
                     if si1 == b'R' && si2 == b'A' && sublen >= 2 {
                         let chunk_len = u16::from_be_bytes([extra[i], extra[i + 1]]);
+                        if chunk_len == 0 {
+                            return Err(DictError::InvalidFormat(
+                                "dict.dz RA table has zero chunk length".to_string(),
+                            ));
+                        }
                         let mut offs = Vec::new();
                         let mut j = i + 2;
                         while j + 4 <= i + sublen {
@@ -697,11 +711,10 @@ impl StarDict {
                 .map_err(|e| DictError::IoError(format!("dict.dz seek after header: {e}")))?;
 
             if fextra {
-                // We have already read and parsed the extra field into `extra` above
-                // using `file`, so advance header_reader by xlen as well to keep it in sync.
-                // xlen is the length of the extra field we just consumed.
-                // Recompute xlen from the same bytes we used previously:
-                // (We still have len_buf in scope there; if not, this is a no-op fallback.)
+                let skip = 2i64 + extra_len as i64;
+                header_reader
+                    .seek(SeekFrom::Current(skip))
+                    .map_err(|e| DictError::IoError(format!("dict.dz seek FEXTRA: {e}")))?;
             }
 
             if fname {
@@ -789,6 +802,11 @@ impl StarDict {
                             "dict.dz zlib error in chunk {ci}: {e}"
                         ))
                     })?;
+                    if decomp.len() > DICTDZ_MAX_DECOMPRESSED {
+                        return Err(DictError::DecompressionError(
+                            "dict.dz chunk exceeds safety limit".to_string(),
+                        ));
+                    }
 
                     // Figure slice of this chunk that intersects requested [start, end)
                     let chunk_start_pos = current_pos;
@@ -811,6 +829,15 @@ impl StarDict {
                     if slice_end > slice_start && slice_start < decomp.len() {
                         let slice_end_clamped =
                             slice_end.min(decomp.len()).min(slice_start + remaining);
+                        if out
+                            .len()
+                            .saturating_add(slice_end_clamped.saturating_sub(slice_start))
+                            > DICTDZ_MAX_DECOMPRESSED
+                        {
+                            return Err(DictError::DecompressionError(
+                                "dict.dz output exceeds safety limit".to_string(),
+                            ));
+                        }
                         out.extend_from_slice(&decomp[slice_start..slice_end_clamped]);
                         remaining =
                             remaining.saturating_sub(slice_end_clamped.saturating_sub(slice_start));
@@ -838,9 +865,25 @@ impl StarDict {
                 .map_err(|e| DictError::IoError(format!("dict.dz reset: {e}")))?;
             let mut seq_decoder = GzDecoder::new(&self.dict_file);
             let mut decompressed = Vec::new();
-            seq_decoder.read_to_end(&mut decompressed).map_err(|e| {
-                DictError::DecompressionError(format!("dict.dz sequential inflate failed: {e}"))
-            })?;
+            let mut buf = [0u8; 8192];
+            loop {
+                match seq_decoder.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if decompressed.len().saturating_add(n) > DICTDZ_MAX_DECOMPRESSED {
+                            return Err(DictError::DecompressionError(
+                                "dict.dz decompressed content exceeds safety limit".to_string(),
+                            ));
+                        }
+                        decompressed.extend_from_slice(&buf[..n]);
+                    }
+                    Err(e) => {
+                        return Err(DictError::DecompressionError(format!(
+                            "dict.dz sequential inflate failed: {e}"
+                        )))
+                    }
+                }
+            }
 
             let start = loc.offset as usize;
             let end_pos = start.checked_add(loc.size as usize).ok_or_else(|| {

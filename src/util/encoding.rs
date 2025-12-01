@@ -408,37 +408,27 @@ pub fn convert_to_utf8(data: &[u8], from_encoding: TextEncoding) -> Result<Strin
 
 /// Convert Windows-1252 to UTF-8
 fn convert_windows1252_to_utf8(data: &[u8]) -> Result<String> {
-    let mut result = String::with_capacity(data.len() * 2);
-
-    for &byte in data {
-        if byte < 0x80 {
-            result.push(byte as char);
-        } else if byte < 0xA0 {
-            // Control characters and special symbols
-            result.push(char::from(byte));
-        } else {
-            // Extended ASCII - map to Unicode
-            result.push(char::from(byte));
-        }
+    let (cow, had_errors) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(data);
+    if had_errors {
+        Err(DictError::Internal(
+            "Windows-1252 conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
     }
-
-    Ok(result)
 }
 
 /// Convert ISO-8859-1 to UTF-8
 fn convert_iso88591_to_utf8(data: &[u8]) -> Result<String> {
-    let mut result = String::with_capacity(data.len() * 2);
-
-    for &byte in data {
-        if byte < 0x80 {
-            result.push(byte as char);
-        } else {
-            // ISO-8859-1 is compatible with Unicode for this range
-            result.push(char::from(byte));
-        }
+    // encoding_rs does not expose ISO-8859-1 separately; Windows-1252 is a superset and works here.
+    let (cow, had_errors) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(data);
+    if had_errors {
+        Err(DictError::Internal(
+            "ISO-8859-1 conversion produced replacement characters".to_string(),
+        ))
+    } else {
+        Ok(cow.into_owned())
     }
-
-    Ok(result)
 }
 
 /// Convert UTF-16LE to UTF-8
@@ -449,60 +439,12 @@ fn convert_utf16le_to_utf8(data: &[u8]) -> Result<String> {
         ));
     }
 
-    let mut result = String::with_capacity(data.len());
-    let mut i = 0;
-
-    while i < data.len() {
-        let code_unit = (data[i + 1] as u32) << 8 | data[i] as u32;
-        i += 2;
-
-        if code_unit < 0x80 {
-            result.push(char::from(code_unit as u8));
-        } else if code_unit < 0x800 {
-            let byte1 = 0xC0 | (code_unit >> 6) as u8;
-            let byte2 = 0x80 | (code_unit & 0x3F) as u8;
-            result.push(byte1 as char);
-            result.push(byte2 as char);
-        } else if code_unit < 0xD800 || code_unit >= 0xE000 {
-            let byte1 = 0xE0 | (code_unit >> 12) as u8;
-            let byte2 = 0x80 | ((code_unit >> 6) & 0x3F) as u8;
-            let byte3 = 0x80 | (code_unit & 0x3F) as u8;
-            result.push(byte1 as char);
-            result.push(byte2 as char);
-            result.push(byte3 as char);
-        } else if code_unit < 0xDC00 {
-            // Surrogate pair
-            if i + 2 <= data.len() {
-                let code_unit2 = (data[i + 1] as u32) << 8 | data[i] as u32;
-                if code_unit2 >= 0xDC00 && code_unit2 < 0xE000 {
-                    let combined = 0x10000 + ((code_unit & 0x3FF) << 10) + (code_unit2 & 0x3FF);
-
-                    let byte1 = 0xF0 | (combined >> 18) as u8;
-                    let byte2 = 0x80 | ((combined >> 12) & 0x3F) as u8;
-                    let byte3 = 0x80 | ((combined >> 6) & 0x3F) as u8;
-                    let byte4 = 0x80 | (combined & 0x3F) as u8;
-
-                    result.push(byte1 as char);
-                    result.push(byte2 as char);
-                    result.push(byte3 as char);
-                    result.push(byte4 as char);
-                    i += 2;
-                } else {
-                    return Err(DictError::Internal(
-                        "Invalid UTF-16 surrogate pair".to_string(),
-                    ));
-                }
-            } else {
-                return Err(DictError::Internal(
-                    "Incomplete UTF-16 surrogate pair".to_string(),
-                ));
-            }
-        } else {
-            return Err(DictError::Internal("Invalid UTF-16 code unit".to_string()));
-        }
+    let mut u16s = Vec::with_capacity(data.len() / 2);
+    for chunk in data.chunks_exact(2) {
+        u16s.push(u16::from_le_bytes([chunk[0], chunk[1]]));
     }
-
-    Ok(result)
+    String::from_utf16(&u16s)
+        .map_err(|e| DictError::Internal(format!("Invalid UTF-16LE data: {e}")))
 }
 
 /// Convert UTF-16BE to UTF-8
@@ -513,60 +455,12 @@ fn convert_utf16be_to_utf8(data: &[u8]) -> Result<String> {
         ));
     }
 
-    let mut result = String::with_capacity(data.len());
-    let mut i = 0;
-
-    while i < data.len() {
-        let code_unit = (data[i] as u32) << 8 | data[i + 1] as u32;
-        i += 2;
-
-        if code_unit < 0x80 {
-            result.push(char::from(code_unit as u8));
-        } else if code_unit < 0x800 {
-            let byte1 = 0xC0 | (code_unit >> 6) as u8;
-            let byte2 = 0x80 | (code_unit & 0x3F) as u8;
-            result.push(byte1 as char);
-            result.push(byte2 as char);
-        } else if code_unit < 0xD800 || code_unit >= 0xE000 {
-            let byte1 = 0xE0 | (code_unit >> 12) as u8;
-            let byte2 = 0x80 | ((code_unit >> 6) & 0x3F) as u8;
-            let byte3 = 0x80 | (code_unit & 0x3F) as u8;
-            result.push(byte1 as char);
-            result.push(byte2 as char);
-            result.push(byte3 as char);
-        } else if code_unit < 0xDC00 {
-            // Surrogate pair
-            if i + 2 <= data.len() {
-                let code_unit2 = (data[i] as u32) << 8 | data[i + 1] as u32;
-                if code_unit2 >= 0xDC00 && code_unit2 < 0xE000 {
-                    let combined = 0x10000 + ((code_unit & 0x3FF) << 10) + (code_unit2 & 0x3FF);
-
-                    let byte1 = 0xF0 | (combined >> 18) as u8;
-                    let byte2 = 0x80 | ((combined >> 12) & 0x3F) as u8;
-                    let byte3 = 0x80 | ((combined >> 6) & 0x3F) as u8;
-                    let byte4 = 0x80 | (combined & 0x3F) as u8;
-
-                    result.push(byte1 as char);
-                    result.push(byte2 as char);
-                    result.push(byte3 as char);
-                    result.push(byte4 as char);
-                    i += 2;
-                } else {
-                    return Err(DictError::Internal(
-                        "Invalid UTF-16 surrogate pair".to_string(),
-                    ));
-                }
-            } else {
-                return Err(DictError::Internal(
-                    "Incomplete UTF-16 surrogate pair".to_string(),
-                ));
-            }
-        } else {
-            return Err(DictError::Internal("Invalid UTF-16 code unit".to_string()));
-        }
+    let mut u16s = Vec::with_capacity(data.len() / 2);
+    for chunk in data.chunks_exact(2) {
+        u16s.push(u16::from_be_bytes([chunk[0], chunk[1]]));
     }
-
-    Ok(result)
+    String::from_utf16(&u16s)
+        .map_err(|e| DictError::Internal(format!("Invalid UTF-16BE data: {e}")))
 }
 
 /// Simplified GB2312 to UTF-8 conversion (placeholder implementation)

@@ -18,6 +18,11 @@ use crate::index::{FtsConfig, Index, IndexConfig, IndexStats};
 use crate::traits::{DictError, Result};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+/// Safety cap for serialized FTS index files.
+const MAX_FTS_BYTES: u64 = 64 * 1024 * 1024;
+/// Safety cap for number of documents to avoid pathological allocations.
+const MAX_DOCS: usize = 500_000;
+
 /// Document ID for FTS operations
 type DocId = u32;
 
@@ -504,6 +509,15 @@ impl Index for FtsIndex {
     }
 
     fn load(&mut self, path: &Path) -> Result<()> {
+        let meta = std::fs::metadata(path).map_err(|e| DictError::IoError(e.to_string()))?;
+        if meta.len() > MAX_FTS_BYTES {
+            return Err(DictError::IndexError(format!(
+                "FTS index {} exceeds safety limit ({} bytes)",
+                path.display(),
+                meta.len()
+            )));
+        }
+
         let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
 
         let mmap = unsafe {
@@ -525,6 +539,14 @@ impl Index for FtsIndex {
         self.documents = documents;
         self.term_stats = term_stats;
         self.stats.size = std::fs::metadata(path)?.len();
+
+        if self.documents.len() > MAX_DOCS {
+            return Err(DictError::IndexError(format!(
+                "FTS index {} has too many documents ({})",
+                path.display(),
+                self.documents.len()
+            )));
+        }
 
         Ok(())
     }

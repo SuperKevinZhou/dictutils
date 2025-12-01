@@ -47,6 +47,8 @@
 //!     use_mmap: true,        // Memory mapping
 //!     cache_size: 1000,      // Entry cache size
 //!     batch_size: 100,       // Batch operation size
+//!     build_btree: true,     // Allow building missing B-TREE sidecar
+//!     build_fts: true,       // Allow building missing FTS sidecar
 //!     ..Default::default()
 //! };
 //!
@@ -130,9 +132,19 @@ pub mod cli {
     use crate::traits::*;
     use std::path::PathBuf;
 
-    /// Sanitize output to prevent ANSI escape code injection
+    /// Sanitize output to prevent control character injection
     fn sanitize_output(input: &str) -> String {
-        input.replace('\x1b', "\\x1b")
+        let mut out = String::with_capacity(input.len());
+        for ch in input.chars() {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                continue;
+            }
+            out.push(ch);
+            if out.len() >= 4096 {
+                break;
+            }
+        }
+        out
     }
 
     /// Command-line interface utilities

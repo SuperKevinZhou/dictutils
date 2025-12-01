@@ -163,6 +163,13 @@ impl MDict {
             (None, None)
         };
 
+        // Fail fast if no usable index is available; full MDX parsing is not implemented yet.
+        if config.load_btree && btree_index.is_none() {
+            return Err(DictError::UnsupportedOperation(
+                "MDict requires an existing B-TREE sidecar for lookups; none found".to_string(),
+            ));
+        }
+
         // Create cache
         let entry_cache = Arc::new(RwLock::new(lru_cache::LruCache::new(config.cache_size)));
 
@@ -334,7 +341,8 @@ impl MDict {
         }
 
         // Decompress headword block info
-        let headword_block_info = Self::decompress_block(&headword_block_info_compressed, version)?;
+        let headword_block_info =
+            Self::decompress_block(&headword_block_info_compressed, version, MDICT_MAX_BLOCK_INFO)?;
 
         // Decode headword block info into block descriptors
         let headword_blocks =
@@ -464,11 +472,17 @@ impl MDict {
         Ok(())
     }
 
-    /// Decompress a block using the appropriate algorithm
-    fn decompress_block(compressed: &[u8], version: f64) -> Result<Vec<u8>> {
+    /// Decompress a block using the appropriate algorithm with a safety limit.
+    fn decompress_block(compressed: &[u8], version: f64, max_output: usize) -> Result<Vec<u8>> {
         if compressed.len() < 8 {
             return Err(DictError::InvalidFormat(
                 "Compressed block too small".to_string(),
+            ));
+        }
+
+        if compressed.len() > max_output.saturating_mul(8) {
+            return Err(DictError::InvalidFormat(
+                "Compressed block size exceeds safety limit".to_string(),
             ));
         }
 
@@ -480,6 +494,11 @@ impl MDict {
         let decompressed = match compression_type {
             0x00000000 => {
                 // No compression
+                if data.len() > max_output {
+                    return Err(DictError::InvalidFormat(
+                        "Uncompressed block exceeds safety limit".to_string(),
+                    ));
+                }
                 if !Self::check_adler32(data, checksum) {
                     return Err(DictError::InvalidFormat(
                         "Adler-32 checksum mismatch for uncompressed data".to_string(),
@@ -492,11 +511,16 @@ impl MDict {
                 let mut lzo = minilzo_rs::LZO::init().map_err(|e| {
                     DictError::DecompressionError(format!("LZO initialization failed: {:?}", e))
                 })?;
-                let estimated_size = data.len() * 4; // Estimate size
+                let estimated_size = std::cmp::min(data.len().saturating_mul(4), max_output);
                 let decompressed = lzo.decompress_safe(data, estimated_size).map_err(|e| {
                     DictError::DecompressionError(format!("LZO decompression failed: {:?}", e))
                 })?;
 
+                if decompressed.len() > max_output {
+                    return Err(DictError::InvalidFormat(
+                        "LZO block exceeds safety limit".to_string(),
+                    ));
+                }
                 if !Self::check_adler32(&decompressed, checksum) {
                     return Err(DictError::InvalidFormat(
                         "Adler-32 checksum mismatch for LZO data".to_string(),
@@ -515,6 +539,11 @@ impl MDict {
                     DictError::DecompressionError(format!("Zlib decompression failed: {}", e))
                 })?;
 
+                if decompressed.len() > max_output {
+                    return Err(DictError::InvalidFormat(
+                        "Zlib block exceeds safety limit".to_string(),
+                    ));
+                }
                 if !Self::check_adler32(&decompressed, checksum) {
                     return Err(DictError::InvalidFormat(
                         "Adler-32 checksum mismatch for zlib data".to_string(),
@@ -643,7 +672,8 @@ impl MDict {
         reader.read_exact(&mut info_compressed)?;
 
         // Decompress record block info (usually uncompressed or zlib)
-        let info_decompressed = Self::decompress_block(&info_compressed, 2.0)?; // Assume version >= 2.0
+        let info_decompressed =
+            Self::decompress_block(&info_compressed, 2.0, MDICT_MAX_BLOCK_INFO)?; // Assume version >= 2.0
 
         // Parse record block descriptors
         let mut record_blocks = Vec::with_capacity(num_blocks as usize);

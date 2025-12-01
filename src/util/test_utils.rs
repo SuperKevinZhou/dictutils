@@ -214,6 +214,8 @@ pub fn test_config() -> DictConfig {
         cache_size: 100,
         batch_size: 50,
         encoding: None,
+        build_btree: true,
+        build_fts: true,
     }
 }
 

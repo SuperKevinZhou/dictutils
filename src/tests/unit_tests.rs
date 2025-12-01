@@ -38,6 +38,8 @@ mod tests {
             assert_eq!(config.cache_size, 1000);
             assert_eq!(config.batch_size, 100);
             assert!(config.encoding.is_none());
+            assert!(config.build_btree);
+            assert!(config.build_fts);
         }
 
         #[test]
@@ -49,6 +51,8 @@ mod tests {
                 cache_size: 500,
                 batch_size: 50,
                 encoding: Some("utf-8".to_string()),
+                build_btree: false,
+                build_fts: false,
             };
 
             assert!(!config.load_btree);
@@ -304,7 +308,7 @@ mod tests {
             assert!(config.use_stemming);
             assert!(config.stop_words.contains(&"the".to_string()));
             assert!(config.stop_words.contains(&"and".to_string()));
-            assert!(config.language, Some("en".to_string()));
+            assert_eq!(config.language, Some("en".to_string()));
         }
 
         #[test]

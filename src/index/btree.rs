@@ -83,6 +83,11 @@ pub struct BTreeIndex {
     node_cache: LruCache<usize, BTreeNode>,
 }
 
+/// Safety cap for index files to avoid untrusted bincode bombs.
+const MAX_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+/// Safety cap for total nodes to avoid pathological allocations.
+const MAX_NODES: usize = 1_000_000;
+
 impl BTreeIndex {
     /// Create a new empty B-Tree index.
     pub fn new() -> Self {
@@ -378,22 +383,42 @@ impl Index for BTreeIndex {
     }
 
     fn load(&mut self, path: &Path) -> Result<()> {
+        let meta = std::fs::metadata(path).map_err(|e| {
+            DictError::IoError(format!("failed to stat index {}: {e}", path.display()))
+        })?;
+        if meta.len() > MAX_INDEX_BYTES {
+            return Err(DictError::IndexError(format!(
+                "B-Tree index {} exceeds safety limit ({} bytes)",
+                path.display(),
+                meta.len()
+            )));
+        }
+
         let mut file = File::open(path).map_err(|e| {
             DictError::IoError(format!("failed to open index {}: {e}", path.display()))
         })?;
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(meta.len() as usize);
         file.read_to_end(&mut buf).map_err(|e| {
             DictError::IoError(format!("failed to read index {}: {e}", path.display()))
         })?;
 
-        let snapshot: BTreeSnapshot = bincode::deserialize(&buf)
-            .map_err(|e| DictError::SerializationError(format!("corrupted B-Tree index: {e}")))?;
+        let snapshot: BTreeSnapshot = bincode::deserialize(&buf).map_err(|e| {
+            DictError::SerializationError(format!("corrupted B-Tree index: {e}"))
+        })?;
 
         self.order = snapshot.order.max(8);
         self.root = snapshot.root;
         self.nodes = snapshot.nodes;
         self.stats = snapshot.stats;
         self.node_cache.clear();
+
+        if self.nodes.len() > MAX_NODES {
+            return Err(DictError::IndexError(format!(
+                "B-Tree index {} has too many nodes ({})",
+                path.display(),
+                self.nodes.len()
+            )));
+        }
         if !self.is_built() {
             return Err(DictError::IndexError(format!(
                 "B-Tree index {} is empty or invalid",

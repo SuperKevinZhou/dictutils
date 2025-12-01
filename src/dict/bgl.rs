@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -113,6 +113,9 @@ pub struct BglDict {
     /// Metadata
     metadata: DictMetadata,
 }
+
+/// Safety cap for inlined article payloads to avoid unbounded reads.
+const MAX_ARTICLE_BYTES: usize = 256 * 1024;
 
 impl BglDict {
     /// Create a BglDict using an existing BGL file and compatible sidecar index files.
@@ -254,26 +257,40 @@ impl BglDict {
         f.seek(SeekFrom::Start(base))
             .map_err(|e| DictError::IoError(format!("seek BGL article: {e}")))?;
 
-        // Read a bounded buffer; real format should encode exact length.
-        let mut buf = vec![0u8; 64 * 1024];
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| DictError::IoError(format!("read BGL article: {e}")))?;
-        buf.truncate(n);
+        let mut reader = BufReader::new(f);
+        let mut consumed = 0usize;
 
-        let mut parts = buf.split(|b| *b == 0u8);
+        fn read_cstring<R: BufRead>(
+            reader: &mut R,
+            consumed: &mut usize,
+        ) -> Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            let bytes = reader
+                .read_until(0, &mut buf)
+                .map_err(|e| DictError::IoError(format!("read BGL cstring: {e}")))?;
+            *consumed = consumed.saturating_add(bytes);
+            if *consumed > MAX_ARTICLE_BYTES {
+                return Err(DictError::InvalidFormat(
+                    "BGL article exceeds safety limit".to_string(),
+                ));
+            }
+            if buf.is_empty() {
+                return Err(DictError::InvalidFormat(
+                    "Unexpected EOF while reading BGL article".to_string(),
+                ));
+            }
+            if buf.last() == Some(&0u8) {
+                buf.pop();
+            }
+            Ok(buf)
+        }
 
-        let head = parts
-            .next()
-            .ok_or_else(|| DictError::InvalidFormat("Missing BGL headword".to_string()))?;
-        let disp = parts.next().ok_or_else(|| {
-            DictError::InvalidFormat("Missing BGL displayed headword".to_string())
-        })?;
-        let rest = parts.next().unwrap_or(&[]);
+        let head = read_cstring(&mut reader, &mut consumed)?;
+        let disp = read_cstring(&mut reader, &mut consumed)?;
+        let body = read_cstring(&mut reader, &mut consumed)?;
 
-        let headword = String::from_utf8_lossy(head).to_string();
-        let displayed = String::from_utf8_lossy(disp).to_string();
-        let body = rest.to_vec();
+        let headword = String::from_utf8_lossy(&head).to_string();
+        let displayed = String::from_utf8_lossy(&disp).to_string();
 
         Ok((headword, displayed, body))
     }

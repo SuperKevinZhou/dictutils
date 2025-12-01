@@ -41,6 +41,9 @@ struct ArticleLoc {
     blob: u32,
 }
 
+/// Safety cap to avoid decompressing arbitrarily large clusters.
+const ZIM_MAX_CLUSTER_BYTES: usize = 64 * 1024 * 1024;
+
 /// Minimal ZIM dictionary implementation.
 ///
 /// Notes:
@@ -481,6 +484,11 @@ impl ZimDict {
             ));
         }
         let comp_size = (next_cluster_offset - cluster_offset - 1) as usize;
+        if comp_size > ZIM_MAX_CLUSTER_BYTES {
+            return Err(DictError::InvalidFormat(
+                "ZIM: compressed cluster exceeds safety limit".to_string(),
+            ));
+        }
         let mut data = vec![0u8; comp_size];
         rdr.read_exact(&mut data)
             .map_err(|e| DictError::IoError(format!("read cluster data: {e}")))?;
@@ -489,6 +497,11 @@ impl ZimDict {
         let decompressed = match compression_type {
             0 | 1 => {
                 // Default/None — raw data
+                if data.len() > ZIM_MAX_CLUSTER_BYTES {
+                    return Err(DictError::InvalidFormat(
+                        "ZIM: uncompressed cluster exceeds safety limit".to_string(),
+                    ));
+                }
                 data
             }
             2 => {
@@ -501,6 +514,11 @@ impl ZimDict {
                         "ZIM zlib cluster decompression failed: {e}"
                     ))
                 })?;
+                if out.len() > ZIM_MAX_CLUSTER_BYTES {
+                    return Err(DictError::InvalidFormat(
+                        "ZIM: decompressed cluster exceeds safety limit".to_string(),
+                    ));
+                }
                 out
             }
             // 3 => Bzip2, 4 => LZMA2, 5 => Zstd in references; can be wired via util::compression if needed.
@@ -528,6 +546,12 @@ impl ZimDict {
             u32::from_le_bytes(tmp) as usize
         };
 
+        if first_off < blobs_offset_size || first_off > decompressed.len() {
+            return Err(DictError::InvalidFormat(
+                "ZIM: invalid first offset in cluster".to_string(),
+            ));
+        }
+
         let blob_count = (first_off - blobs_offset_size) / blobs_offset_size;
         if (blob_no as usize) >= blob_count {
             return Err(DictError::InvalidFormat(format!(
@@ -539,6 +563,11 @@ impl ZimDict {
         // Read two consecutive offsets for blob_no
         let (start, end) = if blobs_offset_size == 8 {
             let base = blob_no as usize * 8;
+            if base + 16 > decompressed.len() {
+                return Err(DictError::InvalidFormat(
+                    "ZIM: offset table truncated".to_string(),
+                ));
+            }
             let mut off_bytes = [0u8; 16];
             off_bytes.copy_from_slice(&decompressed[base..base + 16]);
             let o1 = u64::from_le_bytes(off_bytes[0..8].try_into().unwrap()) as usize;
@@ -546,6 +575,11 @@ impl ZimDict {
             (o1, o2)
         } else {
             let base = blob_no as usize * 4;
+            if base + 8 > decompressed.len() {
+                return Err(DictError::InvalidFormat(
+                    "ZIM: offset table truncated".to_string(),
+                ));
+            }
             let mut off_bytes = [0u8; 8];
             off_bytes.copy_from_slice(&decompressed[base..base + 8]);
             let o1 = u32::from_le_bytes(off_bytes[0..4].try_into().unwrap()) as usize;

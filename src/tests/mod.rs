@@ -42,6 +42,8 @@ impl TestSetup {
             cache_size: 100,
             batch_size: 50,
             encoding: None,
+            build_btree: true,
+            build_fts: true,
         };
 
         let entries = generate_test_entries(1000);

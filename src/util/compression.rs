@@ -8,6 +8,36 @@ use std::result::Result as StdResult;
 
 use crate::traits::{DictError, Result};
 
+/// Soft limit to guard against decompression bombs (128MB).
+const MAX_DECOMPRESSED_BYTES: usize = 128 * 1024 * 1024;
+
+fn ensure_within_limit(len: usize) -> Result<()> {
+    if len > MAX_DECOMPRESSED_BYTES {
+        return Err(DictError::DecompressionError(format!(
+            "Decompressed data exceeds safety limit ({} bytes)",
+            MAX_DECOMPRESSED_BYTES
+        )));
+    }
+    Ok(())
+}
+
+fn read_to_end_with_limit<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        if out.len().saturating_add(n) > limit {
+            return Err(DictError::DecompressionError(
+                "Decompressed data exceeds safety limit".to_string(),
+            ));
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompressionAlgorithm {
     /// No compression
@@ -39,7 +69,10 @@ pub fn compress(data: &[u8], algorithm: CompressionAlgorithm) -> Result<Vec<u8>>
 /// Decompress data using the specified algorithm
 pub fn decompress(compressed: &[u8], algorithm: CompressionAlgorithm) -> Result<Vec<u8>> {
     match algorithm {
-        CompressionAlgorithm::None => Ok(compressed.to_vec()),
+        CompressionAlgorithm::None => {
+            ensure_within_limit(compressed.len())?;
+            Ok(compressed.to_vec())
+        }
         CompressionAlgorithm::Gzip => decompress_gzip(compressed),
         CompressionAlgorithm::Lz4 => decompress_lz4(compressed),
         CompressionAlgorithm::Zstd => decompress_zstd(compressed),
@@ -85,12 +118,9 @@ fn compress_gzip(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn decompress_gzip(compressed: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = flate2::read::GzDecoder::new(compressed);
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    Ok(decompressed)
+    let decoder = flate2::read::GzDecoder::new(compressed);
+    read_to_end_with_limit(decoder, MAX_DECOMPRESSED_BYTES)
+        .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 // LZ4 compression
@@ -107,12 +137,9 @@ fn compress_lz4(data: &[u8]) -> Result<Vec<u8>> {
 
 fn decompress_lz4(compressed: &[u8]) -> Result<Vec<u8>> {
     // Use frame decoder which can determine the output size automatically
-    let mut decoder = lz4_flex::frame::FrameDecoder::new(Cursor::new(compressed));
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    Ok(decompressed)
+    let decoder = lz4_flex::frame::FrameDecoder::new(Cursor::new(compressed));
+    read_to_end_with_limit(decoder, MAX_DECOMPRESSED_BYTES)
+        .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 // Zstandard compression
@@ -128,13 +155,10 @@ fn compress_zstd(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn decompress_zstd(compressed: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder =
-        zstd::Decoder::new(compressed).map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
+    let decoder = zstd::Decoder::new(compressed)
         .map_err(|e| DictError::DecompressionError(e.to_string()))?;
-    Ok(decompressed)
+    read_to_end_with_limit(decoder, MAX_DECOMPRESSED_BYTES)
+        .map_err(|e| DictError::DecompressionError(e.to_string()))
 }
 
 /// Estimate compression ratio
@@ -326,6 +350,7 @@ pub fn decompress_stream<R: Read, W: Write>(
                 match input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
+                        ensure_within_limit(total_written as usize + n)?;
                         output
                             .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
@@ -345,6 +370,7 @@ pub fn decompress_stream<R: Read, W: Write>(
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
+                        ensure_within_limit(total_written as usize + n)?;
                         output
                             .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
@@ -364,6 +390,7 @@ pub fn decompress_stream<R: Read, W: Write>(
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
+                        ensure_within_limit(total_written as usize + n)?;
                         output
                             .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;
@@ -384,6 +411,7 @@ pub fn decompress_stream<R: Read, W: Write>(
                 match decoder.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
+                        ensure_within_limit(total_written as usize + n)?;
                         output
                             .write_all(&buffer[..n])
                             .map_err(|e| DictError::IoError(e.to_string()))?;

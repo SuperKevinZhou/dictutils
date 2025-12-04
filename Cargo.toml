@@ -1,7 +1,15 @@
 [package]
 name = "dictutils"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+description = "Dictionary utilities for Mdict and other formats"
+authors = ["SuperKevinZhou <zzh__2020@outlook.com>"]
+license = "MIT"
+repository = "https://github.com/SuperKevinZhou/dictutils"
+homepage = "https://github.com/SuperKevinZhou/dictutils"
+readme = "README.md"
+keywords = ["dictionary", "mdict", "linguistics", "text-processing"]
+categories = ["text-processing", "compression", "data-structures"]
 
 [dependencies]
 # Memory-mapped file access

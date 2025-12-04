@@ -402,9 +402,8 @@ impl Index for BTreeIndex {
             DictError::IoError(format!("failed to read index {}: {e}", path.display()))
         })?;
 
-        let snapshot: BTreeSnapshot = bincode::deserialize(&buf).map_err(|e| {
-            DictError::SerializationError(format!("corrupted B-Tree index: {e}"))
-        })?;
+        let snapshot: BTreeSnapshot = bincode::deserialize(&buf)
+            .map_err(|e| DictError::SerializationError(format!("corrupted B-Tree index: {e}")))?;
 
         self.order = snapshot.order.max(8);
         self.root = snapshot.root;

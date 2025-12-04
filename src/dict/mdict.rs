@@ -341,8 +341,11 @@ impl MDict {
         }
 
         // Decompress headword block info
-        let headword_block_info =
-            Self::decompress_block(&headword_block_info_compressed, version, MDICT_MAX_BLOCK_INFO)?;
+        let headword_block_info = Self::decompress_block(
+            &headword_block_info_compressed,
+            version,
+            MDICT_MAX_BLOCK_INFO,
+        )?;
 
         // Decode headword block info into block descriptors
         let headword_blocks =
@@ -1231,7 +1234,6 @@ impl HighPerformanceDict<String> for MDict {
     fn binary_search_get(&self, key: &String) -> Result<Vec<u8>> {
         self.get(key)
     }
-
 
     fn stream_search(
         &self,

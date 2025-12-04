@@ -260,10 +260,7 @@ impl BglDict {
         let mut reader = BufReader::new(f);
         let mut consumed = 0usize;
 
-        fn read_cstring<R: BufRead>(
-            reader: &mut R,
-            consumed: &mut usize,
-        ) -> Result<Vec<u8>> {
+        fn read_cstring<R: BufRead>(reader: &mut R, consumed: &mut usize) -> Result<Vec<u8>> {
             let mut buf = Vec::new();
             let bytes = reader
                 .read_until(0, &mut buf)

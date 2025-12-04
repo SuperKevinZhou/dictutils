@@ -155,8 +155,8 @@ fn compress_zstd(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn decompress_zstd(compressed: &[u8]) -> Result<Vec<u8>> {
-    let decoder = zstd::Decoder::new(compressed)
-        .map_err(|e| DictError::DecompressionError(e.to_string()))?;
+    let decoder =
+        zstd::Decoder::new(compressed).map_err(|e| DictError::DecompressionError(e.to_string()))?;
     read_to_end_with_limit(decoder, MAX_DECOMPRESSED_BYTES)
         .map_err(|e| DictError::DecompressionError(e.to_string()))
 }

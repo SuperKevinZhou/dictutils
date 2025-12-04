@@ -399,6 +399,17 @@ Wikipedia offline format with:
 
 **Best for**: Offline wikis, reference materials
 
+### Babylon (BGL)
+
+Babylon format with:
+- Sidecar index support
+- Memory-mapped file access
+- Requires external indexing tools
+
+**Important**: The BGL implementation does NOT parse raw `.bgl` binaries directly. It requires externally built sidecar index files (`.btree` and `.fts`) that must be provided by an external tool like GoldenDict's indexer. The BGL parser only consumes these pre-built indexes and does not implement raw BGL binary parsing.
+
+**Best for**: Babylon dictionaries with pre-built indexes
+
 ## 🚨 Error Handling
 
 All operations return `Result<T, DictError>`:

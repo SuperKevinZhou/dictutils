@@ -27,6 +27,14 @@
 //! - Does not implement sound resource extraction.
 //! - Does not build on-disk indexes itself (uses sidecar BTree/FTS if present).
 //!
+//! Enhanced features (compared to initial implementation):
+//! - Basic DSL tag parsing: [m], [t], [s], [br], [ref], [c], [i], [b], [u], [sub], [sup]
+//! - Media tag detection and metadata tracking
+//! - Transcription tag handling
+//! - Margin control tags
+//! - Link syntax preservation
+//! - Rich markup preservation in parsed output
+//!
 //! This design keeps all parsing logic internal to this module and does not
 //! require any changes to shared traits, FTS, or BTree index implementations.
 
@@ -76,22 +84,48 @@ impl DslEncoding {
     }
 }
 
+/// DSL parsing state and statistics
+#[derive(Debug, Default)]
+struct DslParseState {
+    /// Track if we're inside a transcription [t] tag
+    in_transcription: bool,
+    /// Track if we're inside a sound/media [s] tag
+    in_media: bool,
+    /// Count of media tags found
+    media_count: u32,
+    /// Count of transcription tags found
+    transcription_count: u32,
+    /// Current margin level (for [m], [m1], etc.)
+    current_margin: String,
+    /// Stack of open tags for proper nesting
+    tag_stack: Vec<String>,
+    /// Track if we're inside a comment
+    in_comment: bool,
+}
+
 /// In-memory representation of a parsed DSL entry.
 #[derive(Debug, Clone)]
-struct DslEntry {
-    headword: String,
-    body: String,
+pub struct DslEntry {
+    /// Normalized headword text for this entry.
+    pub headword: String,
+    /// Entry body with DSL markup preserved.
+    pub body: String,
+    /// Metadata about the entry's content
+    pub has_media: bool,
+    /// True if the entry contains transcription tags.
+    pub has_transcription: bool,
+    /// Collected margin tags encountered while parsing this entry.
+    pub margin_tags: Vec<String>,
 }
 
 /// Main DSL dictionary implementation.
 pub struct DslDict {
     /// Primary path (.dsl or .dsl.dz)
     dsl_path: PathBuf,
-    /// Parsed entries (headword -> UTF-8 body)
-    ///
-    /// We keep a simple map for now; for large dictionaries sidecar indexes are
-    /// recommended.
+    /// Parsed entries (headword -> UTF-8 body). Use `dsl_entries` for metadata-rich access.
     entries: HashMap<String, String>,
+    /// Parsed entries including media/transcription/margin metadata.
+    dsl_entries: HashMap<String, DslEntry>,
     /// Optional BTree index (sidecar)
     btree_index: Option<BTreeIndex>,
     /// Optional FTS index (sidecar)
@@ -121,7 +155,7 @@ impl DslDict {
         let (encoding, content) = Self::decode_with_detection(&raw, is_gzip)?;
 
         // Parse headers and entries
-        let (name, lang_from, lang_to, entries) = Self::parse_dsl(&content, encoding)?;
+        let (name, lang_from, lang_to, entries, dsl_entries) = Self::parse_dsl(&content, encoding)?;
 
         let file_size = std::fs::metadata(&dsl_path).map(|m| m.len()).unwrap_or(0);
 
@@ -152,6 +186,7 @@ impl DslDict {
         Ok(Self {
             dsl_path,
             entries,
+            dsl_entries,
             btree_index,
             fts_index,
             entry_cache,
@@ -264,12 +299,14 @@ impl DslDict {
         Option<String>,
         Option<String>,
         HashMap<String, String>,
+        HashMap<String, DslEntry>,
     )> {
         let mut name: Option<String> = None;
         let mut lang_from: Option<String> = None;
         let mut lang_to: Option<String> = None;
 
         let mut entries: HashMap<String, String> = HashMap::new();
+        let mut dsl_entries: HashMap<String, DslEntry> = HashMap::new();
 
         let mut lines = content.lines().enumerate().peekable();
 
@@ -308,62 +345,88 @@ impl DslDict {
         // - Strip DSL comments {{...}}.
         // - Unescape backslash-escaped characters.
         // - Normalize headwords: collapse spaces, trim.
-        let mut current_headword: Option<String> = None;
-        let mut current_body = String::new();
+        let mut current_dsl_entry: Option<DslEntry> = None;
+        let mut current_parse_state: Option<DslParseState> = None;
 
         while let Some((_idx, line)) = lines.next() {
             let raw = line.to_string();
 
             // Skip pure comments / ignore empty while no headword.
-            if raw.trim().is_empty() && current_headword.is_none() {
+            if raw.trim().is_empty() && current_dsl_entry.is_none() {
                 continue;
             }
 
             // Check if line defines a new headword.
             if let Some(hw) = Self::parse_headword_line(&raw) {
                 // Flush existing entry
-                if let Some(h) = current_headword.take() {
-                    let body = current_body.trim().to_string();
-                    if !body.is_empty() {
-                        entries.insert(h, body);
-                    }
+                if let Some(entry) = current_dsl_entry.take() {
+                    Self::flush_dsl_entry(entry, &mut entries, &mut dsl_entries);
                 }
-                current_body.clear();
 
                 let mut hw = hw;
+                current_parse_state = None;
                 Self::normalize_headword(&mut hw);
                 if !hw.is_empty() {
-                    current_headword = Some(hw);
+                    current_parse_state = Some(DslParseState::default());
+                    current_dsl_entry = Some(DslEntry {
+                        headword: hw.clone(),
+                        body: String::new(),
+                        has_media: false,
+                        has_transcription: false,
+                        margin_tags: Vec::new(),
+                    });
                 }
                 continue;
             }
 
             // Otherwise, treat as body line (if we have a headword).
-            if let Some(_) = current_headword {
+            if let Some(entry) = current_dsl_entry.as_mut() {
                 let mut text = raw;
                 // Strip comments {{...}}
                 Self::strip_comments(&mut text);
                 // Unescape simple DSL escapes
                 Self::unescape_dsl(&mut text);
 
-                if !text.is_empty() {
-                    if !current_body.is_empty() {
-                        current_body.push('\n');
+                // Process DSL tags and get metadata
+                let parse_state = current_parse_state.get_or_insert_with(DslParseState::default);
+                let (processed_text, has_media, has_transcription) =
+                    Self::process_dsl_tags(&text, parse_state);
+
+                if !processed_text.is_empty() {
+                    if !entry.body.is_empty() {
+                        entry.body.push('\n');
                     }
-                    current_body.push_str(&text);
+                    entry.body.push_str(&processed_text);
+                }
+
+                entry.has_media = entry.has_media || has_media;
+                entry.has_transcription = entry.has_transcription || has_transcription;
+                if !parse_state.current_margin.is_empty() {
+                    entry.margin_tags.push(parse_state.current_margin.clone());
                 }
             }
         }
 
         // Flush last entry
-        if let Some(h) = current_headword.take() {
-            let body = current_body.trim().to_string();
-            if !body.is_empty() {
-                entries.insert(h, body);
-            }
+        if let Some(dsl_entry) = current_dsl_entry.take() {
+            Self::flush_dsl_entry(dsl_entry, &mut entries, &mut dsl_entries);
         }
 
-        Ok((name, lang_from, lang_to, entries))
+        Ok((name, lang_from, lang_to, entries, dsl_entries))
+    }
+
+    fn flush_dsl_entry(
+        mut entry: DslEntry,
+        entries: &mut HashMap<String, String>,
+        dsl_entries: &mut HashMap<String, DslEntry>,
+    ) {
+        let body = entry.body.trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+        entry.body = body.clone();
+        entries.insert(entry.headword.clone(), body);
+        dsl_entries.insert(entry.headword.clone(), entry);
     }
 
     /// Try to parse header lines of the form: `#KEY "value"`.
@@ -441,6 +504,171 @@ impl DslDict {
         *s = String::from_utf8_lossy(&out).into_owned();
     }
 
+    /// Process DSL tags in a line and return processed content with metadata
+    fn process_dsl_tags(line: &str, state: &mut DslParseState) -> (String, bool, bool) {
+        let mut result = String::new();
+        let mut chars = line.chars().peekable();
+        let mut has_media = false;
+        let mut has_transcription = false;
+
+        while let Some(ch) = chars.next() {
+            if ch == '[' && !state.in_comment {
+                // Check if this is a DSL tag
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '/' {
+                        // Closing tag
+                        let mut raw_tag = String::from("[/");
+                        let mut tag_name = String::new();
+                        chars.next(); // consume '/'
+                        while let Some(&tag_ch) = chars.peek() {
+                            if tag_ch == ']' {
+                                break;
+                            }
+                            tag_name.push(chars.next().unwrap());
+                        }
+                        if chars.next() == Some(']') {
+                            Self::handle_closing_tag(&tag_name, state);
+                            raw_tag.push_str(&tag_name);
+                            raw_tag.push(']');
+                            result.push_str(&raw_tag);
+                        }
+                        continue;
+                    } else {
+                        // Opening tag
+                        let mut raw_tag = String::from("[");
+                        let mut tag_name = String::new();
+                        let mut tag_attrs = String::new();
+                        let mut in_attrs = false;
+
+                        while let Some(&tag_ch) = chars.peek() {
+                            if tag_ch == ']' {
+                                break;
+                            }
+                            if tag_ch == ' ' || tag_ch == '\t' {
+                                in_attrs = true;
+                            }
+                            if in_attrs {
+                                tag_attrs.push(chars.next().unwrap());
+                            } else {
+                                tag_name.push(chars.next().unwrap());
+                            }
+                        }
+                        if chars.next() == Some(']') {
+                            let (tag_has_media, tag_has_transcription) =
+                                Self::handle_opening_tag(&tag_name, &tag_attrs, state);
+                            has_media = has_media || tag_has_media;
+                            has_transcription = has_transcription || tag_has_transcription;
+
+                            raw_tag.push_str(&tag_name);
+                            raw_tag.push_str(&tag_attrs);
+                            raw_tag.push(']');
+                            result.push_str(&raw_tag);
+                        }
+                        continue;
+                    }
+                }
+            } else if ch == '{' && !state.in_comment {
+                // Check for comment start
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '{' {
+                        chars.next(); // consume second '{'
+                        state.in_comment = true;
+                        continue;
+                    }
+                }
+                result.push(ch);
+            } else if ch == '}' && state.in_comment {
+                // Check for comment end
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '}' {
+                        chars.next(); // consume second '}'
+                        state.in_comment = false;
+                        continue;
+                    }
+                }
+                // Still in comment, don't add to result
+            } else if !state.in_comment {
+                result.push(ch);
+            }
+        }
+
+        (result, has_media, has_transcription)
+    }
+
+    /// Handle opening DSL tags
+    fn handle_opening_tag(
+        tag_name: &str,
+        _tag_attrs: &str,
+        state: &mut DslParseState,
+    ) -> (bool, bool) {
+        let mut has_media = false;
+        let mut has_transcription = false;
+
+        match tag_name.to_lowercase().as_str() {
+            "t" => {
+                state.in_transcription = true;
+                state.transcription_count += 1;
+                has_transcription = true;
+                state.tag_stack.push(tag_name.to_string());
+            }
+            "s" => {
+                state.in_media = true;
+                state.media_count += 1;
+                has_media = true;
+                state.tag_stack.push(tag_name.to_string());
+            }
+            "m" | "m1" | "m2" | "m3" | "m4" | "m5" | "m6" | "m7" | "m8" | "m9" => {
+                state.current_margin = tag_name.to_string();
+                state.tag_stack.push(tag_name.to_string());
+            }
+            "br" => {
+                // Self-closing tag, add line break
+                state.tag_stack.push(tag_name.to_string());
+            }
+            "c" | "i" | "b" | "u" | "sub" | "sup" | "ref" => {
+                // Formatting tags
+                state.tag_stack.push(tag_name.to_string());
+            }
+            _ => {
+                // Unknown tag, still track it
+                state.tag_stack.push(tag_name.to_string());
+            }
+        }
+
+        (has_media, has_transcription)
+    }
+
+    /// Handle closing DSL tags
+    fn handle_closing_tag(tag_name: &str, state: &mut DslParseState) {
+        match tag_name.to_lowercase().as_str() {
+            "t" => {
+                state.in_transcription = false;
+                if state.transcription_count > 0 {
+                    state.transcription_count -= 1;
+                }
+            }
+            "s" => {
+                state.in_media = false;
+                if state.media_count > 0 {
+                    state.media_count -= 1;
+                }
+            }
+            "m" | "m1" | "m2" | "m3" | "m4" | "m5" | "m6" | "m7" | "m8" | "m9" => {
+                if state.current_margin == tag_name {
+                    state.current_margin.clear();
+                }
+            }
+            _ => {
+                // Unknown closing tag
+            }
+        }
+
+        // Pop from tag stack if matching
+        if let Some(pos) = state.tag_stack.iter().rposition(|t| t == tag_name) {
+            state.tag_stack.truncate(pos);
+        }
+    }
+
     /// Normalize headword:
     /// - Trim leading/trailing spaces.
     /// - Collapse internal runs of spaces.
@@ -511,6 +739,16 @@ impl DslDict {
         }
 
         Ok((btree_index, fts_index))
+    }
+
+    /// Get DSL entry with metadata (body, media/transcription flags, margin tags).
+    pub fn get_entry_with_metadata(&self, key: &str) -> Option<&DslEntry> {
+        self.dsl_entries.get(key)
+    }
+
+    /// Borrow all parsed DSL entries with metadata.
+    pub fn entries_with_metadata(&self) -> &HashMap<String, DslEntry> {
+        &self.dsl_entries
     }
 
     /// Lookup helper: get UTF-8 body by headword if present.

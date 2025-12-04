@@ -18,10 +18,10 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crc32fast::Hasher;
 use flate2::read::GzDecoder;
 use memmap2::Mmap;
 use parking_lot::RwLock;
-use crc32fast::Hasher;
 
 use crate::index::{btree::BTreeIndex, fts::FtsIndex, Index};
 use crate::traits::{

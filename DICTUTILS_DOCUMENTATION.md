@@ -1144,10 +1144,11 @@ All dictionary operations are thread-safe and can be shared across threads using
 - Requires: External indexing for full functionality
 
 ### Babylon (BGL)
+
 - File extensions: `.bgl`
 - Features: Sidecar index support
 - Requires: `.bglx` or `.idx` sidecar files
-
+- **Important**: BGL implementation does NOT parse raw `.bgl` binaries directly. It requires externally built sidecar index files (`.btree` and `.fts`) that must be provided by an external tool like GoldenDict's indexer. The BGL parser only consumes these pre-built indexes and does not implement raw BGL binary parsing.
 ### DSL (ABBYY Lingvo)
 - File extensions: `.dsl`, `.dsl.dz`
 - Features: Text-based, compression support

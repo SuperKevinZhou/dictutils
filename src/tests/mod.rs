@@ -9,6 +9,7 @@ pub mod performance_tests;
 pub mod concurrent_tests;
 pub mod error_tests;
 pub mod utils_tests;
+pub mod mdx_encoding_test;
 
 pub use unit_tests::*;
 pub use integration_tests::*;
@@ -16,6 +17,7 @@ pub use performance_tests::*;
 pub use concurrent_tests::*;
 pub use error_tests::*;
 pub use utils_tests::*;
+pub use mdx_encoding_test::*;
 
 use crate::traits::{Dict, DictConfig, DictError, Result, BatchResult, SearchResult};
 use crate::util::test_utils::{generate_test_entries, MockDictBuilder};

@@ -822,7 +822,9 @@ impl MDict {
             return Err(DictError::Internal("No file handle available".to_string()));
         };
 
-        Ok(data)
+        // Handle encoding conversion if needed
+        let converted_data = convert_entry_data_if_needed(&data)?;
+        Ok(converted_data)
     }
 
     /// Binary search for key using B-TREE index
@@ -1172,6 +1174,25 @@ impl Dict<String> for MDict {
         MDict::build_indexes(self)
     }
 }
+
+    /// Convert entry data to UTF-8 if it's not already valid UTF-8
+    /// This handles cases where the MDX header declares UTF-8 but the actual
+    /// data is in a different encoding (common with Chinese dictionaries)
+    pub fn convert_entry_data_if_needed(data: &[u8]) -> Result<Vec<u8>> {
+        // If data is already valid UTF-8, return as-is
+        if std::str::from_utf8(data).is_ok() {
+            return Ok(data.to_vec());
+        }
+
+        // Try to detect the actual encoding and convert to UTF-8
+        let detected_encoding = encoding::detect_encoding(data)?;
+
+        // Convert to UTF-8 string first
+        let utf8_string = encoding::convert_to_utf8(data, detected_encoding)?;
+
+        // Return as UTF-8 bytes
+        Ok(utf8_string.into_bytes())
+    }
 
 /// Parse the pseudo-XML MDX header attributes into a key-value map.
 /// Minimal implementation matching the needs of this crate.

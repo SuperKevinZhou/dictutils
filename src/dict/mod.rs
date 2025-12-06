@@ -90,7 +90,7 @@ impl DictLoader {
             .to_lowercase();
 
         match extension.as_str() {
-            "mdict" => Ok(FORMAT_MDICT.to_string()),
+            "mdict" | "mdx" => Ok(FORMAT_MDICT.to_string()),
             "dict" => Ok(FORMAT_STARDICT.to_string()),
             "zim" => Ok(FORMAT_ZIM.to_string()),
             _ => {
@@ -103,7 +103,7 @@ impl DictLoader {
     /// Detect format by reading file header
     fn detect_format_by_header(&self, path: &Path) -> Result<String> {
         use std::fs::File;
-        use std::io::{BufRead, BufReader, Read};
+        use std::io::{BufReader, Read};
 
         if !path.exists() {
             return Err(DictError::FileNotFound(path.display().to_string()));
@@ -112,21 +112,34 @@ impl DictLoader {
         let file = File::open(path).map_err(|e| DictError::IoError(e.to_string()))?;
 
         let mut reader = BufReader::new(file);
-        let mut header = String::new();
+        let mut header = vec![0u8; 4096];
 
         // Read a bounded header slice to avoid OOM on binary files
-        let bytes_read = {
-            let mut limited = reader.take(4096);
-            limited
-                .read_to_string(&mut header)
-                .map_err(|e| DictError::IoError(e.to_string()))?
-        };
+        let bytes_read = reader
+            .read(&mut header)
+            .map_err(|e| DictError::IoError(e.to_string()))?;
 
         if bytes_read == 0 {
             return Err(DictError::InvalidFormat("Empty file".to_string()));
         }
 
+        header.truncate(bytes_read);
+
+        // Detect format using raw bytes first to avoid UTF-8 parsing failures
+        if header.starts_with(b"ZIM") {
+            return Ok(FORMAT_ZIM.to_string());
+        }
+
+        if header.starts_with(b"StarDict's dict") {
+            return Ok(FORMAT_STARDICT.to_string());
+        }
+
+        if Self::looks_like_mdict_header(&header) {
+            return Ok(FORMAT_MDICT.to_string());
+        }
+
         // Remove null bytes and whitespace
+        let header = String::from_utf8_lossy(&header);
         let header = header.trim_matches(|c: char| c.is_control() || c.is_whitespace());
 
         // Detect format by magic numbers/signatures
@@ -173,7 +186,7 @@ impl DictLoader {
     pub fn is_dictionary_file(&self, path: &Path) -> bool {
         if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
             match extension.to_lowercase().as_str() {
-                "mdict" | "dict" | "zim" => return true,
+                "mdict" | "mdx" | "dict" | "zim" => return true,
                 _ => {}
             }
         }
@@ -189,6 +202,20 @@ impl DictLoader {
             FORMAT_STARDICT.to_string(),
             FORMAT_ZIM.to_string(),
         ]
+    }
+
+    fn looks_like_mdict_header(bytes: &[u8]) -> bool {
+        if bytes.len() < 8 {
+            return false;
+        }
+
+        let header_len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        if header_len == 0 || header_len > 512 * 1024 {
+            return false;
+        }
+
+        // MDX header text starts with "<Dictionary" in UTF-16LE after the length prefix.
+        bytes.get(4) == Some(&0x3C) && bytes.get(5) == Some(&0x00) && bytes.get(6) == Some(&0x44)
     }
 
     /// Get default configuration

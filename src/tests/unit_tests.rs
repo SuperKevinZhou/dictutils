@@ -11,7 +11,7 @@ mod tests {
     use crate::util::compression::*;
     use crate::util::encoding::*;
     use crate::index::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Test trait implementations
     mod trait_tests {
@@ -364,11 +364,29 @@ mod tests {
             
             // Test extension-based detection
             assert_eq!(loader.detect_format(Path::new("test.mdict")).unwrap(), "mdict");
+            assert_eq!(loader.detect_format(Path::new("test.mdx")).unwrap(), "mdict");
             assert_eq!(loader.detect_format(Path::new("test.dict")).unwrap(), "stardict");
             assert_eq!(loader.detect_format(Path::new("test.zim")).unwrap(), "zim");
 
             // Test unknown extension
             assert!(loader.detect_format(Path::new("test.unknown")).is_err());
+        }
+
+        #[test]
+        fn test_detect_format_from_binary_mdict_header() {
+            let loader = DictLoader::new();
+            let temp_dir = temp_dir().unwrap();
+            let mdx_path = temp_dir.path().join("mdict_no_ext");
+
+            // Minimal MDX-like header: length prefix + UTF-16LE "<Dictionary" start
+            let mut header = Vec::new();
+            header.extend_from_slice(&32u32.to_be_bytes());
+            header.extend_from_slice(&[0x3C, 0x00, 0x44, 0x00, 0x69, 0x00, 0x63, 0x00, 0x74, 0x00]);
+            header.extend_from_slice(&[0u8; 16]);
+            std::fs::write(&mdx_path, &header).unwrap();
+
+            let format = loader.detect_format(&mdx_path).unwrap();
+            assert_eq!(format, "mdict");
         }
 
         #[test]
